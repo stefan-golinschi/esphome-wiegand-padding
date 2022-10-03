@@ -11,7 +11,6 @@ from esphome.const import (
     CONF_ALTITUDE,
     CONF_SATELLITES,
     STATE_CLASS_MEASUREMENT,
-    STATE_CLASS_NONE,
     UNIT_DEGREES,
     UNIT_KILOMETER_PER_HOUR,
     UNIT_METER,
@@ -28,34 +27,29 @@ GPSListener = gps_ns.class_("GPSListener")
 
 CONF_GPS_ID = "gps_id"
 MULTI_CONF = True
-CONFIG_SCHEMA = (
+CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(GPS),
             cv.Optional(CONF_LATITUDE): sensor.sensor_schema(
                 unit_of_measurement=UNIT_DEGREES,
                 accuracy_decimals=6,
-                state_class=STATE_CLASS_NONE,
             ),
             cv.Optional(CONF_LONGITUDE): sensor.sensor_schema(
                 unit_of_measurement=UNIT_DEGREES,
                 accuracy_decimals=6,
-                state_class=STATE_CLASS_NONE,
             ),
             cv.Optional(CONF_SPEED): sensor.sensor_schema(
                 unit_of_measurement=UNIT_KILOMETER_PER_HOUR,
                 accuracy_decimals=6,
-                state_class=STATE_CLASS_NONE,
             ),
             cv.Optional(CONF_COURSE): sensor.sensor_schema(
                 unit_of_measurement=UNIT_DEGREES,
                 accuracy_decimals=2,
-                state_class=STATE_CLASS_NONE,
             ),
             cv.Optional(CONF_ALTITUDE): sensor.sensor_schema(
                 unit_of_measurement=UNIT_METER,
                 accuracy_decimals=1,
-                state_class=STATE_CLASS_NONE,
             ),
             cv.Optional(CONF_SATELLITES): sensor.sensor_schema(
                 accuracy_decimals=0,
@@ -64,7 +58,8 @@ CONFIG_SCHEMA = (
         }
     )
     .extend(cv.polling_component_schema("20s"))
-    .extend(uart.UART_DEVICE_SCHEMA)
+    .extend(uart.UART_DEVICE_SCHEMA),
+    cv.only_with_arduino,
 )
 FINAL_VALIDATE_SCHEMA = uart.final_validate_device_schema("gps", require_rx=True)
 
@@ -99,4 +94,4 @@ async def to_code(config):
         cg.add(var.set_satellites_sensor(sens))
 
     # https://platformio.org/lib/show/1655/TinyGPSPlus
-    cg.add_library("1655", "1.0.2")  # TinyGPSPlus, has name conflict
+    cg.add_library("mikalhart/TinyGPSPlus", "1.0.2")

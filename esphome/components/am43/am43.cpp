@@ -1,12 +1,13 @@
 #include "am43.h"
 #include "esphome/core/log.h"
+#include "esphome/core/hal.h"
 
-#ifdef ARDUINO_ARCH_ESP32
+#ifdef USE_ESP32
 
 namespace esphome {
 namespace am43 {
 
-static const char *TAG = "am43";
+static const char *const TAG = "am43";
 
 void Am43::dump_config() {
   ESP_LOGCONFIG(TAG, "AM43");
@@ -15,8 +16,8 @@ void Am43::dump_config() {
 }
 
 void Am43::setup() {
-  this->encoder_ = new Am43Encoder();
-  this->decoder_ = new Am43Decoder();
+  this->encoder_ = make_unique<Am43Encoder>();
+  this->decoder_ = make_unique<Am43Decoder>();
   this->logged_in_ = false;
   this->last_battery_update_ = 0;
   this->current_sensor_ = 0;
@@ -30,7 +31,7 @@ void Am43::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_i
     }
     case ESP_GATTC_DISCONNECT_EVT: {
       this->logged_in_ = false;
-      this->node_state = espbt::ClientState::Idle;
+      this->node_state = espbt::ClientState::IDLE;
       if (this->battery_ != nullptr)
         this->battery_->publish_state(NAN);
       if (this->illuminance_ != nullptr)
@@ -38,7 +39,7 @@ void Am43::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_i
       break;
     }
     case ESP_GATTC_SEARCH_CMPL_EVT: {
-      auto chr = this->parent_->get_characteristic(AM43_SERVICE_UUID, AM43_CHARACTERISTIC_UUID);
+      auto *chr = this->parent_->get_characteristic(AM43_SERVICE_UUID, AM43_CHARACTERISTIC_UUID);
       if (chr == nullptr) {
         if (this->parent_->get_characteristic(AM43_TUYA_SERVICE_UUID, AM43_TUYA_CHARACTERISTIC_UUID) != nullptr) {
           ESP_LOGE(TAG, "[%s] Detected a Tuya AM43 which is not supported, sorry.",
@@ -53,7 +54,7 @@ void Am43::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_i
       break;
     }
     case ESP_GATTC_REG_FOR_NOTIFY_EVT: {
-      this->node_state = espbt::ClientState::Established;
+      this->node_state = espbt::ClientState::ESTABLISHED;
       this->update();
       break;
     }
@@ -74,13 +75,14 @@ void Am43::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_i
 
       if (this->current_sensor_ > 0) {
         if (this->illuminance_ != nullptr) {
-          auto packet = this->encoder_->get_light_level_request();
+          auto *packet = this->encoder_->get_light_level_request();
           auto status = esp_ble_gattc_write_char(this->parent_->gattc_if, this->parent_->conn_id, this->char_handle_,
                                                  packet->length, packet->data, ESP_GATT_WRITE_TYPE_NO_RSP,
                                                  ESP_GATT_AUTH_REQ_NONE);
-          if (status)
+          if (status) {
             ESP_LOGW(TAG, "[%s] esp_ble_gattc_write_char failed, status=%d", this->parent_->address_str().c_str(),
                      status);
+          }
         }
         this->current_sensor_ = 0;
       }
@@ -92,13 +94,13 @@ void Am43::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_i
 }
 
 void Am43::update() {
-  if (this->node_state != espbt::ClientState::Established) {
+  if (this->node_state != espbt::ClientState::ESTABLISHED) {
     ESP_LOGW(TAG, "[%s] Cannot poll, not connected", this->parent_->address_str().c_str());
     return;
   }
   if (this->current_sensor_ == 0) {
     if (this->battery_ != nullptr) {
-      auto packet = this->encoder_->get_battery_level_request();
+      auto *packet = this->encoder_->get_battery_level_request();
       auto status =
           esp_ble_gattc_write_char(this->parent_->gattc_if, this->parent_->conn_id, this->char_handle_, packet->length,
                                    packet->data, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);

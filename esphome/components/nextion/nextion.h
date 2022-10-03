@@ -7,11 +7,11 @@
 #include "nextion_component.h"
 #include "esphome/components/display/display_color_utils.h"
 
-#if defined(USE_ETHERNET) || defined(USE_WIFI)
-#ifdef ARDUINO_ARCH_ESP32
+#ifdef USE_NEXTION_TFT_UPLOAD
+#ifdef USE_ESP32
 #include <HTTPClient.h>
 #endif
-#ifdef ARDUINO_ARCH_ESP8266
+#ifdef USE_ESP8266
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecure.h>
 #endif
@@ -652,7 +652,7 @@ class Nextion : public NextionBase, public PollingComponent, public uart::UARTDe
    */
   bool send_command_printf(const char *format, ...) __attribute__((format(printf, 2, 3)));
 
-#ifdef USE_TFT_UPLOAD
+#ifdef USE_NEXTION_TFT_UPLOAD
   /**
    * Set the tft file URL. https seems problamtic with arduino..
    */
@@ -688,6 +688,12 @@ class Nextion : public NextionBase, public PollingComponent, public uart::UARTDe
    * @param callback The void() callback.
    */
   void add_setup_state_callback(std::function<void()> &&callback);
+
+  /** Add a callback to be notified when the nextion changes pages.
+   *
+   * @param callback The void(std::string) callback.
+   */
+  void add_new_page_callback(std::function<void(uint8_t)> &&callback);
 
   void update_all_components();
 
@@ -769,9 +775,8 @@ class Nextion : public NextionBase, public PollingComponent, public uart::UARTDe
                                                  const std::string &variable_name_to_send,
                                                  const std::string &state_value, bool is_sleep_safe = false);
 
-#ifdef USE_TFT_UPLOAD
-#if defined(USE_ETHERNET) || defined(USE_WIFI)
-#ifdef ARDUINO_ARCH_ESP8266
+#ifdef USE_NEXTION_TFT_UPLOAD
+#ifdef USE_ESP8266
   WiFiClient *wifi_client_{nullptr};
   BearSSL::WiFiClientSecure *wifi_client_secure_{nullptr};
   WiFiClient *get_wifi_client_();
@@ -800,9 +805,7 @@ class Nextion : public NextionBase, public PollingComponent, public uart::UARTDe
   bool upload_from_buffer_(const uint8_t *file_buf, size_t buf_size);
   void upload_end_();
 
-#endif
-
-#endif
+#endif  // USE_NEXTION_TFT_UPLOAD
 
   bool get_is_connected_() { return this->is_connected_; }
 
@@ -816,6 +819,7 @@ class Nextion : public NextionBase, public PollingComponent, public uart::UARTDe
   CallbackManager<void()> setup_callback_{};
   CallbackManager<void()> sleep_callback_{};
   CallbackManager<void()> wake_callback_{};
+  CallbackManager<void(uint8_t)> page_callback_{};
 
   optional<nextion_writer_t> writer_;
   float brightness_{1.0};
@@ -827,7 +831,7 @@ class Nextion : public NextionBase, public PollingComponent, public uart::UARTDe
 
   void remove_front_no_sensors_();
 
-#ifdef USE_TFT_UPLOAD
+#ifdef USE_NEXTION_TFT_UPLOAD
   std::string tft_url_;
   uint8_t *transfer_buffer_{nullptr};
   size_t transfer_buffer_size_;

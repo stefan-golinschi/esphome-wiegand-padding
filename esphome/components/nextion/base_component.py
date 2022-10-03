@@ -18,6 +18,7 @@ CONF_TFT_URL = "tft_url"
 CONF_ON_SLEEP = "on_sleep"
 CONF_ON_WAKE = "on_wake"
 CONF_ON_SETUP = "on_setup"
+CONF_ON_PAGE = "on_page"
 CONF_TOUCH_SLEEP_TIMEOUT = "touch_sleep_timeout"
 CONF_WAKE_UP_PAGE = "wake_up_page"
 CONF_AUTO_WAKE_ON_TOUCH = "auto_wake_on_touch"
@@ -30,16 +31,14 @@ CONF_FONT_ID = "font_id"
 
 
 def NextionName(value):
-    valid_chars = ascii_letters + digits + "."
+    valid_chars = f"{ascii_letters + digits}."
     if not isinstance(value, str) or len(value) > 29:
         raise cv.Invalid("Must be a string less than 29 characters")
 
     for char in value:
         if char not in valid_chars:
             raise cv.Invalid(
-                "Must only consist of upper/lowercase characters, numbers and the period '.'. The character '{}' cannot be used.".format(
-                    char
-                )
+                f"Must only consist of upper/lowercase characters, numbers and the period '.'. The character '{char}' cannot be used."
             )
 
     return value

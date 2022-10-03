@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include "esphome/core/log.h"
 
 namespace esphome {
 namespace climate {
@@ -75,7 +76,7 @@ enum ClimateSwingMode : uint8_t {
   CLIMATE_SWING_HORIZONTAL = 3,
 };
 
-/// Enum for all modes a climate swing can be in
+/// Enum for all preset modes
 enum ClimatePreset : uint8_t {
   /// No preset is active
   CLIMATE_PRESET_NONE = 0,
@@ -96,19 +97,19 @@ enum ClimatePreset : uint8_t {
 };
 
 /// Convert the given ClimateMode to a human-readable string.
-const char *climate_mode_to_string(ClimateMode mode);
+const LogString *climate_mode_to_string(ClimateMode mode);
 
 /// Convert the given ClimateAction to a human-readable string.
-const char *climate_action_to_string(ClimateAction action);
+const LogString *climate_action_to_string(ClimateAction action);
 
 /// Convert the given ClimateFanMode to a human-readable string.
-const char *climate_fan_mode_to_string(ClimateFanMode mode);
+const LogString *climate_fan_mode_to_string(ClimateFanMode mode);
 
 /// Convert the given ClimateSwingMode to a human-readable string.
-const char *climate_swing_mode_to_string(ClimateSwingMode mode);
+const LogString *climate_swing_mode_to_string(ClimateSwingMode mode);
 
-/// Convert the given ClimateSwingMode to a human-readable string.
-const char *climate_preset_to_string(ClimatePreset preset);
+/// Convert the given PresetMode to a human-readable string.
+const LogString *climate_preset_to_string(ClimatePreset preset);
 
 }  // namespace climate
 }  // namespace esphome

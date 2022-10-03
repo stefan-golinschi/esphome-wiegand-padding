@@ -1,7 +1,9 @@
 #include "api_connection.h"
+#include "esphome/core/entity_base.h"
 #include "esphome/core/log.h"
-#include "esphome/core/util.h"
+#include "esphome/components/network/util.h"
 #include "esphome/core/version.h"
+#include "esphome/core/hal.h"
 #include <cerrno>
 
 #ifdef USE_DEEP_SLEEP
@@ -10,17 +12,15 @@
 #ifdef USE_HOMEASSISTANT_TIME
 #include "esphome/components/homeassistant/time/homeassistant_time.h"
 #endif
-#ifdef USE_FAN
-#include "esphome/components/fan/fan_helpers.h"
-#endif
 
 namespace esphome {
 namespace api {
 
 static const char *const TAG = "api.connection";
+static const int ESP32_CAMERA_STOP_STREAM = 5000;
 
 APIConnection::APIConnection(std::unique_ptr<socket::Socket> sock, APIServer *parent)
-    : parent_(parent), initial_state_iterator_(parent, this), list_entities_iterator_(parent, this) {
+    : parent_(parent), initial_state_iterator_(this), list_entities_iterator_(this) {
   this->proto_write_buffer_.reserve(64);
 
 #if defined(USE_API_PLAINTEXT)
@@ -36,30 +36,27 @@ void APIConnection::start() {
 
   APIError err = helper_->init();
   if (err != APIError::OK) {
-    ESP_LOGW(TAG, "Helper init failed: %d errno=%d", (int) err, errno);
-    remove_ = true;
+    on_fatal_error();
+    ESP_LOGW(TAG, "%s: Helper init failed: %s errno=%d", client_info_.c_str(), api_error_to_str(err), errno);
     return;
   }
   client_info_ = helper_->getpeername();
   helper_->set_log_info(client_info_);
 }
 
-void APIConnection::force_disconnect_client() {
-  this->helper_->close();
-  this->remove_ = true;
-}
-
 void APIConnection::loop() {
   if (this->remove_)
     return;
 
-  if (!network_is_connected()) {
+  if (!network::is_connected()) {
     // when network is disconnected force disconnect immediately
     // don't wait for timeout
     this->on_fatal_error();
+    ESP_LOGW(TAG, "%s: Network unavailable, disconnecting", client_info_.c_str());
     return;
   }
   if (this->next_close_) {
+    // requested a disconnect
     this->helper_->close();
     this->remove_ = true;
     return;
@@ -68,7 +65,7 @@ void APIConnection::loop() {
   APIError err = helper_->loop();
   if (err != APIError::OK) {
     on_fatal_error();
-    ESP_LOGW(TAG, "%s: Socket operation failed: %d", client_info_.c_str(), (int) err);
+    ESP_LOGW(TAG, "%s: Socket operation failed: %s errno=%d", client_info_.c_str(), api_error_to_str(err), errno);
     return;
   }
   ReadPacketBuffer buffer;
@@ -77,7 +74,13 @@ void APIConnection::loop() {
     // pass
   } else if (err != APIError::OK) {
     on_fatal_error();
-    ESP_LOGW(TAG, "%s: Reading failed: %d", client_info_.c_str(), (int) err);
+    if (err == APIError::SOCKET_READ_FAILED && errno == ECONNRESET) {
+      ESP_LOGW(TAG, "%s: Connection reset", client_info_.c_str());
+    } else if (err == APIError::CONNECTION_CLOSED) {
+      ESP_LOGW(TAG, "%s: Connection closed", client_info_.c_str());
+    } else {
+      ESP_LOGW(TAG, "%s: Reading failed: %s errno=%d", client_info_.c_str(), api_error_to_str(err), errno);
+    }
     return;
   } else {
     this->last_traffic_ = millis();
@@ -95,10 +98,11 @@ void APIConnection::loop() {
   if (this->sent_ping_) {
     // Disconnect if not responded within 2.5*keepalive
     if (now - this->last_traffic_ > (keepalive * 5) / 2) {
-      this->force_disconnect_client();
-      ESP_LOGW(TAG, "'%s' didn't respond to ping request in time. Disconnecting...", this->client_info_.c_str());
+      on_fatal_error();
+      ESP_LOGW(TAG, "%s didn't respond to ping request in time. Disconnecting...", this->client_info_.c_str());
     }
   } else if (now - this->last_traffic_ > keepalive) {
+    ESP_LOGVV(TAG, "Sending keepalive PING...");
     this->sent_ping_ = true;
     this->send_ping_request(PingRequest());
   }
@@ -124,10 +128,38 @@ void APIConnection::loop() {
     }
   }
 #endif
+
+  if (state_subs_at_ != -1) {
+    const auto &subs = this->parent_->get_state_subs();
+    if (state_subs_at_ >= (int) subs.size()) {
+      state_subs_at_ = -1;
+    } else {
+      auto &it = subs[state_subs_at_];
+      SubscribeHomeAssistantStateResponse resp;
+      resp.entity_id = it.entity_id;
+      resp.attribute = it.attribute.value();
+      if (this->send_subscribe_home_assistant_state_response(resp)) {
+        state_subs_at_++;
+      }
+    }
+  }
 }
 
-std::string get_default_unique_id(const std::string &component_type, Nameable *nameable) {
-  return App.get_name() + component_type + nameable->get_object_id();
+std::string get_default_unique_id(const std::string &component_type, EntityBase *entity) {
+  return App.get_name() + component_type + entity->get_object_id();
+}
+
+DisconnectResponse APIConnection::disconnect(const DisconnectRequest &msg) {
+  // remote initiated disconnect_client
+  // don't close yet, we still need to send the disconnect response
+  // close will happen on next loop
+  ESP_LOGD(TAG, "%s requested disconnected", client_info_.c_str());
+  this->next_close_ = true;
+  DisconnectResponse resp;
+  return resp;
+}
+void APIConnection::on_disconnect_response(const DisconnectResponse &value) {
+  // pass
 }
 
 #ifdef USE_BINARY_SENSOR
@@ -150,6 +182,8 @@ bool APIConnection::send_binary_sensor_info(binary_sensor::BinarySensor *binary_
   msg.device_class = binary_sensor->get_device_class();
   msg.is_status_binary_sensor = binary_sensor->is_status_binary_sensor();
   msg.disabled_by_default = binary_sensor->is_disabled_by_default();
+  msg.icon = binary_sensor->get_icon();
+  msg.entity_category = static_cast<enums::EntityCategory>(binary_sensor->get_entity_category());
   return this->send_list_entities_binary_sensor_response(msg);
 }
 #endif
@@ -182,6 +216,8 @@ bool APIConnection::send_cover_info(cover::Cover *cover) {
   msg.supports_tilt = traits.get_supports_tilt();
   msg.device_class = cover->get_device_class();
   msg.disabled_by_default = cover->is_disabled_by_default();
+  msg.icon = cover->get_icon();
+  msg.entity_category = static_cast<enums::EntityCategory>(cover->get_entity_category());
   return this->send_list_entities_cover_response(msg);
 }
 void APIConnection::cover_command(const CoverCommandRequest &msg) {
@@ -214,7 +250,7 @@ void APIConnection::cover_command(const CoverCommandRequest &msg) {
 #endif
 
 #ifdef USE_FAN
-bool APIConnection::send_fan_state(fan::FanState *fan) {
+bool APIConnection::send_fan_state(fan::Fan *fan) {
   if (!this->state_subscription_)
     return false;
 
@@ -226,13 +262,12 @@ bool APIConnection::send_fan_state(fan::FanState *fan) {
     resp.oscillating = fan->oscillating;
   if (traits.supports_speed()) {
     resp.speed_level = fan->speed;
-    resp.speed = static_cast<enums::FanSpeed>(fan::speed_level_to_enum(fan->speed, traits.supported_speed_count()));
   }
   if (traits.supports_direction())
     resp.direction = static_cast<enums::FanDirection>(fan->direction);
   return this->send_fan_state_response(resp);
 }
-bool APIConnection::send_fan_info(fan::FanState *fan) {
+bool APIConnection::send_fan_info(fan::Fan *fan) {
   auto traits = fan->get_traits();
   ListEntitiesFanResponse msg;
   msg.key = fan->get_object_id_hash();
@@ -244,14 +279,14 @@ bool APIConnection::send_fan_info(fan::FanState *fan) {
   msg.supports_direction = traits.supports_direction();
   msg.supported_speed_count = traits.supported_speed_count();
   msg.disabled_by_default = fan->is_disabled_by_default();
+  msg.icon = fan->get_icon();
+  msg.entity_category = static_cast<enums::EntityCategory>(fan->get_entity_category());
   return this->send_list_entities_fan_response(msg);
 }
 void APIConnection::fan_command(const FanCommandRequest &msg) {
-  fan::FanState *fan = App.get_fan_by_key(msg.key);
+  fan::Fan *fan = App.get_fan_by_key(msg.key);
   if (fan == nullptr)
     return;
-
-  auto traits = fan->get_traits();
 
   auto call = fan->make_call();
   if (msg.has_state)
@@ -261,9 +296,6 @@ void APIConnection::fan_command(const FanCommandRequest &msg) {
   if (msg.has_speed_level) {
     // Prefer level
     call.set_speed(msg.speed_level);
-  } else if (msg.has_speed) {
-    // NOLINTNEXTLINE(clang-diagnostic-deprecated-declarations)
-    call.set_speed(fan::speed_enum_to_level(static_cast<fan::FanSpeed>(msg.speed), traits.supported_speed_count()));
   }
   if (msg.has_direction)
     call.set_direction(static_cast<fan::FanDirection>(msg.direction));
@@ -306,6 +338,8 @@ bool APIConnection::send_light_info(light::LightState *light) {
   msg.unique_id = get_default_unique_id("light", light);
 
   msg.disabled_by_default = light->is_disabled_by_default();
+  msg.icon = light->get_icon();
+  msg.entity_category = static_cast<enums::EntityCategory>(light->get_entity_category());
 
   for (auto mode : traits.get_supported_color_modes())
     msg.supported_color_modes.push_back(static_cast<enums::ColorMode>(mode));
@@ -390,9 +424,9 @@ bool APIConnection::send_sensor_info(sensor::Sensor *sensor) {
   msg.accuracy_decimals = sensor->get_accuracy_decimals();
   msg.force_update = sensor->get_force_update();
   msg.device_class = sensor->get_device_class();
-  msg.state_class = static_cast<enums::SensorStateClass>(sensor->state_class);
+  msg.state_class = static_cast<enums::SensorStateClass>(sensor->get_state_class());
   msg.disabled_by_default = sensor->is_disabled_by_default();
-
+  msg.entity_category = static_cast<enums::EntityCategory>(sensor->get_entity_category());
   return this->send_list_entities_sensor_response(msg);
 }
 #endif
@@ -416,6 +450,8 @@ bool APIConnection::send_switch_info(switch_::Switch *a_switch) {
   msg.icon = a_switch->get_icon();
   msg.assumed_state = a_switch->assumed_state();
   msg.disabled_by_default = a_switch->is_disabled_by_default();
+  msg.entity_category = static_cast<enums::EntityCategory>(a_switch->get_entity_category());
+  msg.device_class = a_switch->get_device_class();
   return this->send_list_entities_switch_response(msg);
 }
 void APIConnection::switch_command(const SwitchCommandRequest &msg) {
@@ -423,10 +459,11 @@ void APIConnection::switch_command(const SwitchCommandRequest &msg) {
   if (a_switch == nullptr)
     return;
 
-  if (msg.state)
+  if (msg.state) {
     a_switch->turn_on();
-  else
+  } else {
     a_switch->turn_off();
+  }
 }
 #endif
 
@@ -451,6 +488,7 @@ bool APIConnection::send_text_sensor_info(text_sensor::TextSensor *text_sensor) 
     msg.unique_id = get_default_unique_id("text_sensor", text_sensor);
   msg.icon = text_sensor->get_icon();
   msg.disabled_by_default = text_sensor->is_disabled_by_default();
+  msg.entity_category = static_cast<enums::EntityCategory>(text_sensor->get_entity_category());
   return this->send_list_entities_text_sensor_response(msg);
 }
 #endif
@@ -496,6 +534,8 @@ bool APIConnection::send_climate_info(climate::Climate *climate) {
   msg.unique_id = get_default_unique_id("climate", climate);
 
   msg.disabled_by_default = climate->is_disabled_by_default();
+  msg.icon = climate->get_icon();
+  msg.entity_category = static_cast<enums::EntityCategory>(climate->get_entity_category());
 
   msg.supports_current_temperature = traits.get_supports_current_temperature();
   msg.supports_two_point_target_temperature = traits.get_supports_two_point_target_temperature();
@@ -568,8 +608,11 @@ bool APIConnection::send_number_info(number::Number *number) {
   msg.object_id = number->get_object_id();
   msg.name = number->get_name();
   msg.unique_id = get_default_unique_id("number", number);
-  msg.icon = number->traits.get_icon();
+  msg.icon = number->get_icon();
   msg.disabled_by_default = number->is_disabled_by_default();
+  msg.entity_category = static_cast<enums::EntityCategory>(number->get_entity_category());
+  msg.unit_of_measurement = number->traits.get_unit_of_measurement();
+  msg.mode = static_cast<enums::NumberMode>(number->traits.get_mode());
 
   msg.min_value = number->traits.get_min_value();
   msg.max_value = number->traits.get_max_value();
@@ -605,8 +648,9 @@ bool APIConnection::send_select_info(select::Select *select) {
   msg.object_id = select->get_object_id();
   msg.name = select->get_name();
   msg.unique_id = get_default_unique_id("select", select);
-  msg.icon = select->traits.get_icon();
+  msg.icon = select->get_icon();
   msg.disabled_by_default = select->is_disabled_by_default();
+  msg.entity_category = static_cast<enums::EntityCategory>(select->get_entity_category());
 
   for (const auto &option : select->traits.get_options())
     msg.options.push_back(option);
@@ -624,13 +668,126 @@ void APIConnection::select_command(const SelectCommandRequest &msg) {
 }
 #endif
 
+#ifdef USE_BUTTON
+bool APIConnection::send_button_info(button::Button *button) {
+  ListEntitiesButtonResponse msg;
+  msg.key = button->get_object_id_hash();
+  msg.object_id = button->get_object_id();
+  msg.name = button->get_name();
+  msg.unique_id = get_default_unique_id("button", button);
+  msg.icon = button->get_icon();
+  msg.disabled_by_default = button->is_disabled_by_default();
+  msg.entity_category = static_cast<enums::EntityCategory>(button->get_entity_category());
+  msg.device_class = button->get_device_class();
+  return this->send_list_entities_button_response(msg);
+}
+void APIConnection::button_command(const ButtonCommandRequest &msg) {
+  button::Button *button = App.get_button_by_key(msg.key);
+  if (button == nullptr)
+    return;
+
+  button->press();
+}
+#endif
+
+#ifdef USE_LOCK
+bool APIConnection::send_lock_state(lock::Lock *a_lock, lock::LockState state) {
+  if (!this->state_subscription_)
+    return false;
+
+  LockStateResponse resp{};
+  resp.key = a_lock->get_object_id_hash();
+  resp.state = static_cast<enums::LockState>(state);
+  return this->send_lock_state_response(resp);
+}
+bool APIConnection::send_lock_info(lock::Lock *a_lock) {
+  ListEntitiesLockResponse msg;
+  msg.key = a_lock->get_object_id_hash();
+  msg.object_id = a_lock->get_object_id();
+  msg.name = a_lock->get_name();
+  msg.unique_id = get_default_unique_id("lock", a_lock);
+  msg.icon = a_lock->get_icon();
+  msg.assumed_state = a_lock->traits.get_assumed_state();
+  msg.disabled_by_default = a_lock->is_disabled_by_default();
+  msg.entity_category = static_cast<enums::EntityCategory>(a_lock->get_entity_category());
+  msg.supports_open = a_lock->traits.get_supports_open();
+  msg.requires_code = a_lock->traits.get_requires_code();
+  return this->send_list_entities_lock_response(msg);
+}
+void APIConnection::lock_command(const LockCommandRequest &msg) {
+  lock::Lock *a_lock = App.get_lock_by_key(msg.key);
+  if (a_lock == nullptr)
+    return;
+
+  switch (msg.command) {
+    case enums::LOCK_UNLOCK:
+      a_lock->unlock();
+      break;
+    case enums::LOCK_LOCK:
+      a_lock->lock();
+      break;
+    case enums::LOCK_OPEN:
+      a_lock->open();
+      break;
+  }
+}
+#endif
+
+#ifdef USE_MEDIA_PLAYER
+bool APIConnection::send_media_player_state(media_player::MediaPlayer *media_player) {
+  if (!this->state_subscription_)
+    return false;
+
+  MediaPlayerStateResponse resp{};
+  resp.key = media_player->get_object_id_hash();
+  resp.state = static_cast<enums::MediaPlayerState>(media_player->state);
+  resp.volume = media_player->volume;
+  resp.muted = media_player->is_muted();
+  return this->send_media_player_state_response(resp);
+}
+bool APIConnection::send_media_player_info(media_player::MediaPlayer *media_player) {
+  ListEntitiesMediaPlayerResponse msg;
+  msg.key = media_player->get_object_id_hash();
+  msg.object_id = media_player->get_object_id();
+  msg.name = media_player->get_name();
+  msg.unique_id = get_default_unique_id("media_player", media_player);
+  msg.icon = media_player->get_icon();
+  msg.disabled_by_default = media_player->is_disabled_by_default();
+  msg.entity_category = static_cast<enums::EntityCategory>(media_player->get_entity_category());
+
+  auto traits = media_player->get_traits();
+  msg.supports_pause = traits.get_supports_pause();
+
+  return this->send_list_entities_media_player_response(msg);
+}
+void APIConnection::media_player_command(const MediaPlayerCommandRequest &msg) {
+  media_player::MediaPlayer *media_player = App.get_media_player_by_key(msg.key);
+  if (media_player == nullptr)
+    return;
+
+  auto call = media_player->make_call();
+  if (msg.has_command) {
+    call.set_command(static_cast<media_player::MediaPlayerCommand>(msg.command));
+  }
+  if (msg.has_volume) {
+    call.set_volume(msg.volume);
+  }
+  if (msg.has_media_url) {
+    call.set_media_url(msg.media_url);
+  }
+  call.perform();
+}
+#endif
+
 #ifdef USE_ESP32_CAMERA
 void APIConnection::send_camera_state(std::shared_ptr<esp32_camera::CameraImage> image) {
   if (!this->state_subscription_)
     return;
   if (this->image_reader_.available())
     return;
-  this->image_reader_.set_image(image);
+  if (image->was_requested_by(esphome::esp32_camera::API_REQUESTER) ||
+      image->was_requested_by(esphome::esp32_camera::IDLE))
+    this->image_reader_.set_image(std::move(image));
 }
 bool APIConnection::send_camera_info(esp32_camera::ESP32Camera *camera) {
   ListEntitiesCameraResponse msg;
@@ -639,6 +796,8 @@ bool APIConnection::send_camera_info(esp32_camera::ESP32Camera *camera) {
   msg.name = camera->get_name();
   msg.unique_id = get_default_unique_id("camera", camera);
   msg.disabled_by_default = camera->is_disabled_by_default();
+  msg.icon = camera->get_icon();
+  msg.entity_category = static_cast<enums::EntityCategory>(camera->get_entity_category());
   return this->send_list_entities_camera_response(msg);
 }
 void APIConnection::camera_image(const CameraImageRequest &msg) {
@@ -646,9 +805,14 @@ void APIConnection::camera_image(const CameraImageRequest &msg) {
     return;
 
   if (msg.single)
-    esp32_camera::global_esp32_camera->request_image();
-  if (msg.stream)
-    esp32_camera::global_esp32_camera->request_stream();
+    esp32_camera::global_esp32_camera->request_image(esphome::esp32_camera::API_REQUESTER);
+  if (msg.stream) {
+    esp32_camera::global_esp32_camera->start_stream(esphome::esp32_camera::API_REQUESTER);
+
+    App.scheduler.set_timeout(this->parent_, "api_esp32_camera_stop_stream", ESP32_CAMERA_STOP_STREAM, []() {
+      esp32_camera::global_esp32_camera->stop_stream(esphome::esp32_camera::API_REQUESTER);
+    });
+  }
 }
 #endif
 
@@ -670,15 +834,7 @@ bool APIConnection::send_log_message(int level, const char *tag, const char *lin
   // string message = 3;
   buffer.encode_string(3, line, strlen(line));
   // SubscribeLogsResponse - 29
-  bool success = this->send_buffer(buffer, 29);
-  if (!success) {
-    buffer = this->create_buffer();
-    // bool send_failed = 4;
-    buffer.encode_bool(4, true);
-    return this->send_buffer(buffer, 29);
-  } else {
-    return true;
-  }
+  return this->send_buffer(buffer, 29);
 }
 
 HelloResponse APIConnection::hello(const HelloRequest &msg) {
@@ -690,6 +846,8 @@ HelloResponse APIConnection::hello(const HelloRequest &msg) {
   resp.api_version_major = 1;
   resp.api_version_minor = 6;
   resp.server_info = App.get_name() + " (esphome v" ESPHOME_VERSION ")";
+  resp.name = App.get_name();
+
   this->connection_state_ = ConnectionState::CONNECTED;
   return resp;
 }
@@ -700,7 +858,7 @@ ConnectResponse APIConnection::connect(const ConnectRequest &msg) {
   // bool invalid_password = 1;
   resp.invalid_password = !correct;
   if (correct) {
-    ESP_LOGD(TAG, "Client '%s' connected successfully!", this->client_info_.c_str());
+    ESP_LOGD(TAG, "%s: Connected successfully", this->client_info_.c_str());
     this->connection_state_ = ConnectionState::AUTHENTICATED;
 
 #ifdef USE_HOMEASSISTANT_TIME
@@ -726,13 +884,20 @@ DeviceInfoResponse APIConnection::device_info(const DeviceInfoRequest &msg) {
   resp.project_name = ESPHOME_PROJECT_NAME;
   resp.project_version = ESPHOME_PROJECT_VERSION;
 #endif
+#ifdef USE_WEBSERVER
+  resp.webserver_port = USE_WEBSERVER_PORT;
+#endif
+#ifdef USE_BLUETOOTH_PROXY
+  resp.has_bluetooth_proxy = true;
+#endif
   return resp;
 }
 void APIConnection::on_home_assistant_state_response(const HomeAssistantStateResponse &msg) {
-  for (auto &it : this->parent_->get_state_subs())
+  for (auto &it : this->parent_->get_state_subs()) {
     if (it.entity_id == msg.entity_id && it.attribute.value() == msg.attribute) {
       it.callback(msg.state);
     }
+  }
 }
 void APIConnection::execute_service(const ExecuteServiceRequest &msg) {
   bool found = false;
@@ -746,43 +911,53 @@ void APIConnection::execute_service(const ExecuteServiceRequest &msg) {
   }
 }
 void APIConnection::subscribe_home_assistant_states(const SubscribeHomeAssistantStatesRequest &msg) {
-  for (auto &it : this->parent_->get_state_subs()) {
-    SubscribeHomeAssistantStateResponse resp;
-    resp.entity_id = it.entity_id;
-    resp.attribute = it.attribute.value();
-    if (!this->send_subscribe_home_assistant_state_response(resp)) {
-      this->on_fatal_error();
-      return;
-    }
-  }
+  state_subs_at_ = 0;
 }
 bool APIConnection::send_buffer(ProtoWriteBuffer buffer, uint32_t message_type) {
   if (this->remove_)
     return false;
-  if (!this->helper_->can_write_without_blocking())
-    return false;
+  if (!this->helper_->can_write_without_blocking()) {
+    delay(0);
+    APIError err = helper_->loop();
+    if (err != APIError::OK) {
+      on_fatal_error();
+      ESP_LOGW(TAG, "%s: Socket operation failed: %s errno=%d", client_info_.c_str(), api_error_to_str(err), errno);
+      return false;
+    }
+    if (!this->helper_->can_write_without_blocking()) {
+      // SubscribeLogsResponse
+      if (message_type != 29) {
+        ESP_LOGV(TAG, "Cannot send message because of TCP buffer space");
+      }
+      delay(0);
+      return false;
+    }
+  }
 
   APIError err = this->helper_->write_packet(message_type, buffer.get_buffer()->data(), buffer.get_buffer()->size());
   if (err == APIError::WOULD_BLOCK)
     return false;
   if (err != APIError::OK) {
     on_fatal_error();
-    ESP_LOGW(TAG, "%s: Packet write failed %d errno=%d", client_info_.c_str(), (int) err, errno);
+    if (err == APIError::SOCKET_WRITE_FAILED && errno == ECONNRESET) {
+      ESP_LOGW(TAG, "%s: Connection reset", client_info_.c_str());
+    } else {
+      ESP_LOGW(TAG, "%s: Packet write failed %s errno=%d", client_info_.c_str(), api_error_to_str(err), errno);
+    }
     return false;
   }
-  this->last_traffic_ = millis();
+  // Do not set last_traffic_ on send
   return true;
 }
 void APIConnection::on_unauthenticated_access() {
   this->on_fatal_error();
-  ESP_LOGD(TAG, "'%s' tried to access without authentication.", this->client_info_.c_str());
+  ESP_LOGD(TAG, "%s: tried to access without authentication.", this->client_info_.c_str());
 }
 void APIConnection::on_no_setup_connection() {
   this->on_fatal_error();
-  ESP_LOGD(TAG, "'%s' tried to access without full connection.", this->client_info_.c_str());
+  ESP_LOGD(TAG, "%s: tried to access without full connection.", this->client_info_.c_str());
 }
 void APIConnection::on_fatal_error() {
-  ESP_LOGV(TAG, "Error: Disconnecting %s", this->client_info_.c_str());
   this->helper_->close();
   this->remove_ = true;
 }

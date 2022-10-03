@@ -1,5 +1,10 @@
 #include "scd30.h"
 #include "esphome/core/log.h"
+#include "esphome/core/hal.h"
+
+#ifdef USE_ESP8266
+#include <Wire.h>
+#endif
 
 namespace esphome {
 namespace scd30 {
@@ -23,19 +28,13 @@ static const uint16_t SCD30_CMD_SOFT_RESET = 0xD304;
 void SCD30Component::setup() {
   ESP_LOGCONFIG(TAG, "Setting up scd30...");
 
-#ifdef ARDUINO_ARCH_ESP8266
+#ifdef USE_ESP8266
   Wire.setClockStretchLimit(150000);
 #endif
 
   /// Firmware version identification
-  if (!this->write_command_(SCD30_CMD_GET_FIRMWARE_VERSION)) {
-    this->error_code_ = COMMUNICATION_FAILED;
-    this->mark_failed();
-    return;
-  }
   uint16_t raw_firmware_version[3];
-
-  if (!this->read_data_(raw_firmware_version, 3)) {
+  if (!this->get_register(SCD30_CMD_GET_FIRMWARE_VERSION, raw_firmware_version, 3)) {
     this->error_code_ = FIRMWARE_IDENTIFICATION_FAILED;
     this->mark_failed();
     return;
@@ -44,18 +43,18 @@ void SCD30Component::setup() {
            uint16_t(raw_firmware_version[0] & 0xFF));
 
   if (this->temperature_offset_ != 0) {
-    if (!this->write_command_(SCD30_CMD_TEMPERATURE_OFFSET, (uint16_t)(temperature_offset_ * 100.0))) {
+    if (!this->write_command(SCD30_CMD_TEMPERATURE_OFFSET, (uint16_t)(temperature_offset_ * 100.0))) {
       ESP_LOGE(TAG, "Sensor SCD30 error setting temperature offset.");
       this->error_code_ = MEASUREMENT_INIT_FAILED;
       this->mark_failed();
       return;
     }
   }
-#ifdef ARDUINO_ARCH_ESP32
+#ifdef USE_ESP32
   // According ESP32 clock stretching is typically 30ms and up to 150ms "due to
   // internal calibration processes". The I2C peripheral only supports 13ms (at
   // least when running at 80MHz).
-  // In practise it seems that clock stretching occurs during this calibration
+  // In practice it seems that clock stretching occurs during this calibration
   // calls. It also seems that delays in between calls makes them
   // disappear/shorter. Hence work around with delays for ESP32.
   //
@@ -64,36 +63,52 @@ void SCD30Component::setup() {
   delay(30);
 #endif
 
+  if (!this->write_command(SCD30_CMD_MEASUREMENT_INTERVAL, update_interval_)) {
+    ESP_LOGE(TAG, "Sensor SCD30 error setting update interval.");
+    this->error_code_ = MEASUREMENT_INIT_FAILED;
+    this->mark_failed();
+    return;
+  }
+#ifdef USE_ESP32
+  delay(30);
+#endif
+
   // The start measurement command disables the altitude compensation, if any, so we only set it if it's turned on
   if (this->altitude_compensation_ != 0xFFFF) {
-    if (!this->write_command_(SCD30_CMD_ALTITUDE_COMPENSATION, altitude_compensation_)) {
+    if (!this->write_command(SCD30_CMD_ALTITUDE_COMPENSATION, altitude_compensation_)) {
       ESP_LOGE(TAG, "Sensor SCD30 error setting altitude compensation.");
       this->error_code_ = MEASUREMENT_INIT_FAILED;
       this->mark_failed();
       return;
     }
   }
-#ifdef ARDUINO_ARCH_ESP32
+#ifdef USE_ESP32
   delay(30);
 #endif
 
-  if (!this->write_command_(SCD30_CMD_AUTOMATIC_SELF_CALIBRATION, enable_asc_ ? 1 : 0)) {
+  if (!this->write_command(SCD30_CMD_AUTOMATIC_SELF_CALIBRATION, enable_asc_ ? 1 : 0)) {
     ESP_LOGE(TAG, "Sensor SCD30 error setting automatic self calibration.");
     this->error_code_ = MEASUREMENT_INIT_FAILED;
     this->mark_failed();
     return;
   }
-#ifdef ARDUINO_ARCH_ESP32
+#ifdef USE_ESP32
   delay(30);
 #endif
 
   /// Sensor initialization
-  if (!this->write_command_(SCD30_CMD_START_CONTINUOUS_MEASUREMENTS, this->ambient_pressure_compensation_)) {
+  if (!this->write_command(SCD30_CMD_START_CONTINUOUS_MEASUREMENTS, this->ambient_pressure_compensation_)) {
     ESP_LOGE(TAG, "Sensor SCD30 error starting continuous measurements.");
     this->error_code_ = MEASUREMENT_INIT_FAILED;
     this->mark_failed();
     return;
   }
+
+  // check each 500ms if data is ready, and read it in that case
+  this->set_interval("status-check", 500, [this]() {
+    if (this->is_data_ready_())
+      this->update();
+  });
 }
 
 void SCD30Component::dump_config() {
@@ -123,27 +138,21 @@ void SCD30Component::dump_config() {
   ESP_LOGCONFIG(TAG, "  Automatic self calibration: %s", ONOFF(this->enable_asc_));
   ESP_LOGCONFIG(TAG, "  Ambient pressure compensation: %dmBar", this->ambient_pressure_compensation_);
   ESP_LOGCONFIG(TAG, "  Temperature offset: %.2f °C", this->temperature_offset_);
-  LOG_UPDATE_INTERVAL(this);
+  ESP_LOGCONFIG(TAG, "  Update interval: %ds", this->update_interval_);
   LOG_SENSOR("  ", "CO2", this->co2_sensor_);
   LOG_SENSOR("  ", "Temperature", this->temperature_sensor_);
   LOG_SENSOR("  ", "Humidity", this->humidity_sensor_);
 }
 
 void SCD30Component::update() {
-  /// Check if measurement is ready before reading the value
-  if (!this->write_command_(SCD30_CMD_GET_DATA_READY_STATUS)) {
-    this->status_set_warning();
-    return;
-  }
-
-  uint16_t raw_read_status[1];
-  if (!this->read_data_(raw_read_status, 1) || raw_read_status[0] == 0x00) {
+  uint16_t raw_read_status;
+  if (!this->read_data(raw_read_status) || raw_read_status == 0x00) {
     this->status_set_warning();
     ESP_LOGW(TAG, "Data not ready yet!");
     return;
   }
 
-  if (!this->write_command_(SCD30_CMD_READ_MEASUREMENT)) {
+  if (!this->write_command(SCD30_CMD_READ_MEASUREMENT)) {
     ESP_LOGW(TAG, "Error reading measurement!");
     this->status_set_warning();
     return;
@@ -151,7 +160,7 @@ void SCD30Component::update() {
 
   this->set_timeout(50, [this]() {
     uint16_t raw_data[6];
-    if (!this->read_data_(raw_data, 6)) {
+    if (!this->read_data(raw_data, 6)) {
       this->status_set_warning();
       return;
     }
@@ -181,66 +190,16 @@ void SCD30Component::update() {
   });
 }
 
-bool SCD30Component::write_command_(uint16_t command) {
-  // Warning ugly, trick the I2Ccomponent base by setting register to the first 8 bit.
-  return this->write_byte(command >> 8, command & 0xFF);
-}
-
-bool SCD30Component::write_command_(uint16_t command, uint16_t data) {
-  uint8_t raw[5];
-  raw[0] = command >> 8;
-  raw[1] = command & 0xFF;
-  raw[2] = data >> 8;
-  raw[3] = data & 0xFF;
-  raw[4] = sht_crc_(raw[2], raw[3]);
-  return this->write_bytes_raw(raw, 5);
-}
-
-uint8_t SCD30Component::sht_crc_(uint8_t data1, uint8_t data2) {
-  uint8_t bit;
-  uint8_t crc = 0xFF;
-
-  crc ^= data1;
-  for (bit = 8; bit > 0; --bit) {
-    if (crc & 0x80)
-      crc = (crc << 1) ^ 0x131;
-    else
-      crc = (crc << 1);
-  }
-
-  crc ^= data2;
-  for (bit = 8; bit > 0; --bit) {
-    if (crc & 0x80)
-      crc = (crc << 1) ^ 0x131;
-    else
-      crc = (crc << 1);
-  }
-
-  return crc;
-}
-
-bool SCD30Component::read_data_(uint16_t *data, uint8_t len) {
-  const uint8_t num_bytes = len * 3;
-  auto *buf = new uint8_t[num_bytes];
-
-  if (!this->parent_->raw_receive(this->address_, buf, num_bytes)) {
-    delete[](buf);
+bool SCD30Component::is_data_ready_() {
+  if (!this->write_command(SCD30_CMD_GET_DATA_READY_STATUS)) {
     return false;
   }
-
-  for (uint8_t i = 0; i < len; i++) {
-    const uint8_t j = 3 * i;
-    uint8_t crc = sht_crc_(buf[j], buf[j + 1]);
-    if (crc != buf[j + 2]) {
-      ESP_LOGE(TAG, "CRC8 Checksum invalid! 0x%02X != 0x%02X", buf[j + 2], crc);
-      delete[](buf);
-      return false;
-    }
-    data[i] = (buf[j] << 8) | buf[j + 1];
+  delay(4);
+  uint16_t is_data_ready;
+  if (!this->read_data(&is_data_ready, 1)) {
+    return false;
   }
-
-  delete[](buf);
-  return true;
+  return is_data_ready == 1;
 }
 
 }  // namespace scd30

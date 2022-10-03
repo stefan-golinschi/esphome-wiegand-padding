@@ -1,10 +1,13 @@
 #pragma once
 
+#ifdef USE_ARDUINO
+
 #include "esphome/core/component.h"
 
+#include <map>
 #include <memory>
 #include <set>
-#include <map>
+#include <vector>
 
 class UDP;
 
@@ -31,11 +34,9 @@ class E131Component : public esphome::Component {
   void loop() override;
   float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
 
- public:
   void add_effect(E131AddressableLightEffect *light_effect);
   void remove_effect(E131AddressableLightEffect *light_effect);
 
- public:
   void set_method(E131ListenMethod listen_method) { this->listen_method_ = listen_method; }
 
  protected:
@@ -45,7 +46,6 @@ class E131Component : public esphome::Component {
   void join_(int universe);
   void leave_(int universe);
 
- protected:
   E131ListenMethod listen_method_{E131_MULTICAST};
   std::unique_ptr<UDP> udp_;
   std::set<E131AddressableLightEffect *> light_effects_;
@@ -55,3 +55,5 @@ class E131Component : public esphome::Component {
 
 }  // namespace e131
 }  // namespace esphome
+
+#endif  // USE_ARDUINO

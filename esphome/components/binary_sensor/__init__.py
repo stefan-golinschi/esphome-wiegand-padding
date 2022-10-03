@@ -1,15 +1,17 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
+from esphome.cpp_generator import MockObjClass
+from esphome.cpp_helpers import setup_entity
 from esphome import automation, core
 from esphome.automation import Condition, maybe_simple_id
 from esphome.components import mqtt
 from esphome.const import (
     CONF_DELAY,
     CONF_DEVICE_CLASS,
-    CONF_DISABLED_BY_DEFAULT,
+    CONF_ENTITY_CATEGORY,
     CONF_FILTERS,
+    CONF_ICON,
     CONF_ID,
-    CONF_INTERNAL,
     CONF_INVALID_COOLDOWN,
     CONF_INVERTED,
     CONF_MAX_LENGTH,
@@ -20,14 +22,15 @@ from esphome.const import (
     CONF_ON_PRESS,
     CONF_ON_RELEASE,
     CONF_ON_STATE,
+    CONF_PUBLISH_INITIAL_STATE,
     CONF_STATE,
     CONF_TIMING,
     CONF_TRIGGER_ID,
-    CONF_NAME,
     CONF_MQTT_ID,
     DEVICE_CLASS_EMPTY,
     DEVICE_CLASS_BATTERY,
     DEVICE_CLASS_BATTERY_CHARGING,
+    DEVICE_CLASS_CARBON_MONOXIDE,
     DEVICE_CLASS_COLD,
     DEVICE_CLASS_CONNECTIVITY,
     DEVICE_CLASS_DOOR,
@@ -45,9 +48,11 @@ from esphome.const import (
     DEVICE_CLASS_POWER,
     DEVICE_CLASS_PRESENCE,
     DEVICE_CLASS_PROBLEM,
+    DEVICE_CLASS_RUNNING,
     DEVICE_CLASS_SAFETY,
     DEVICE_CLASS_SMOKE,
     DEVICE_CLASS_SOUND,
+    DEVICE_CLASS_TAMPER,
     DEVICE_CLASS_UPDATE,
     DEVICE_CLASS_VIBRATION,
     DEVICE_CLASS_WINDOW,
@@ -60,6 +65,7 @@ DEVICE_CLASSES = [
     DEVICE_CLASS_EMPTY,
     DEVICE_CLASS_BATTERY,
     DEVICE_CLASS_BATTERY_CHARGING,
+    DEVICE_CLASS_CARBON_MONOXIDE,
     DEVICE_CLASS_COLD,
     DEVICE_CLASS_CONNECTIVITY,
     DEVICE_CLASS_DOOR,
@@ -77,9 +83,11 @@ DEVICE_CLASSES = [
     DEVICE_CLASS_POWER,
     DEVICE_CLASS_PRESENCE,
     DEVICE_CLASS_PROBLEM,
+    DEVICE_CLASS_RUNNING,
     DEVICE_CLASS_SAFETY,
     DEVICE_CLASS_SMOKE,
     DEVICE_CLASS_SOUND,
+    DEVICE_CLASS_TAMPER,
     DEVICE_CLASS_UPDATE,
     DEVICE_CLASS_VIBRATION,
     DEVICE_CLASS_WINDOW,
@@ -88,7 +96,7 @@ DEVICE_CLASSES = [
 IS_PLATFORM_COMPONENT = True
 
 binary_sensor_ns = cg.esphome_ns.namespace("binary_sensor")
-BinarySensor = binary_sensor_ns.class_("BinarySensor", cg.Nameable)
+BinarySensor = binary_sensor_ns.class_("BinarySensor", cg.EntityBase)
 BinarySensorInitiallyOff = binary_sensor_ns.class_(
     "BinarySensorInitiallyOff", BinarySensor
 )
@@ -231,17 +239,16 @@ def parse_multi_click_timing_str(value):
     parts = value.lower().split(" ")
     if len(parts) != 5:
         raise cv.Invalid(
-            "Multi click timing grammar consists of exactly 5 words, not {}"
-            "".format(len(parts))
+            f"Multi click timing grammar consists of exactly 5 words, not {len(parts)}"
         )
     try:
         state = cv.boolean(parts[0])
     except cv.Invalid:
         # pylint: disable=raise-missing-from
-        raise cv.Invalid("First word must either be ON or OFF, not {}".format(parts[0]))
+        raise cv.Invalid(f"First word must either be ON or OFF, not {parts[0]}")
 
     if parts[1] != "for":
-        raise cv.Invalid("Second word must be 'for', got {}".format(parts[1]))
+        raise cv.Invalid(f"Second word must be 'for', got {parts[1]}")
 
     if parts[2] == "at":
         if parts[3] == "least":
@@ -250,8 +257,7 @@ def parse_multi_click_timing_str(value):
             key = CONF_MAX_LENGTH
         else:
             raise cv.Invalid(
-                "Third word after at must either be 'least' or 'most', got {}"
-                "".format(parts[3])
+                f"Third word after at must either be 'least' or 'most', got {parts[3]}"
             )
         try:
             length = cv.positive_time_period_milliseconds(parts[4])
@@ -296,13 +302,11 @@ def validate_multi_click_timing(value):
         new_state = v_.get(CONF_STATE, not state)
         if new_state == state:
             raise cv.Invalid(
-                "Timings must have alternating state. Indices {} and {} have "
-                "the same state {}".format(i, i + 1, state)
+                f"Timings must have alternating state. Indices {i} and {i + 1} have the same state {state}"
             )
         if max_length is not None and max_length < min_length:
             raise cv.Invalid(
-                "Max length ({}) must be larger than min length ({})."
-                "".format(max_length, min_length)
+                f"Max length ({max_length}) must be larger than min length ({min_length})."
             )
 
         state = new_state
@@ -316,15 +320,17 @@ def validate_multi_click_timing(value):
     return timings
 
 
-device_class = cv.one_of(*DEVICE_CLASSES, lower=True, space="_")
+validate_device_class = cv.one_of(*DEVICE_CLASSES, lower=True, space="_")
 
-BINARY_SENSOR_SCHEMA = cv.NAMEABLE_SCHEMA.extend(cv.MQTT_COMPONENT_SCHEMA).extend(
+
+BINARY_SENSOR_SCHEMA = cv.ENTITY_BASE_SCHEMA.extend(cv.MQTT_COMPONENT_SCHEMA).extend(
     {
         cv.GenerateID(): cv.declare_id(BinarySensor),
         cv.OnlyWith(CONF_MQTT_ID, "mqtt"): cv.declare_id(
             mqtt.MQTTBinarySensorComponent
         ),
-        cv.Optional(CONF_DEVICE_CLASS): device_class,
+        cv.Optional(CONF_PUBLISH_INITIAL_STATE): cv.boolean,
+        cv.Optional(CONF_DEVICE_CLASS): validate_device_class,
         cv.Optional(CONF_FILTERS): validate_filters,
         cv.Optional(CONF_ON_PRESS): automation.validate_automation(
             {
@@ -377,14 +383,47 @@ BINARY_SENSOR_SCHEMA = cv.NAMEABLE_SCHEMA.extend(cv.MQTT_COMPONENT_SCHEMA).exten
     }
 )
 
+_UNDEF = object()
+
+
+def binary_sensor_schema(
+    class_: MockObjClass = _UNDEF,
+    *,
+    icon: str = _UNDEF,
+    entity_category: str = _UNDEF,
+    device_class: str = _UNDEF,
+) -> cv.Schema:
+    schema = BINARY_SENSOR_SCHEMA
+    if class_ is not _UNDEF:
+        schema = schema.extend({cv.GenerateID(): cv.declare_id(class_)})
+    if icon is not _UNDEF:
+        schema = schema.extend({cv.Optional(CONF_ICON, default=icon): cv.icon})
+    if entity_category is not _UNDEF:
+        schema = schema.extend(
+            {
+                cv.Optional(
+                    CONF_ENTITY_CATEGORY, default=entity_category
+                ): cv.entity_category
+            }
+        )
+    if device_class is not _UNDEF:
+        schema = schema.extend(
+            {
+                cv.Optional(
+                    CONF_DEVICE_CLASS, default=device_class
+                ): validate_device_class
+            }
+        )
+    return schema
+
 
 async def setup_binary_sensor_core_(var, config):
-    cg.add(var.set_name(config[CONF_NAME]))
-    cg.add(var.set_disabled_by_default(config[CONF_DISABLED_BY_DEFAULT]))
-    if CONF_INTERNAL in config:
-        cg.add(var.set_internal(config[CONF_INTERNAL]))
+    await setup_entity(var, config)
+
     if CONF_DEVICE_CLASS in config:
         cg.add(var.set_device_class(config[CONF_DEVICE_CLASS]))
+    if CONF_PUBLISH_INITIAL_STATE in config:
+        cg.add(var.set_publish_initial_state(config[CONF_PUBLISH_INITIAL_STATE]))
     if CONF_INVERTED in config:
         cg.add(var.set_inverted(config[CONF_INVERTED]))
     if CONF_FILTERS in config:
@@ -444,8 +483,8 @@ async def register_binary_sensor(var, config):
     await setup_binary_sensor_core_(var, config)
 
 
-async def new_binary_sensor(config):
-    var = cg.new_Pvariable(config[CONF_ID], config[CONF_NAME])
+async def new_binary_sensor(config, *args):
+    var = cg.new_Pvariable(config[CONF_ID], *args)
     await register_binary_sensor(var, config)
     return var
 

@@ -23,6 +23,9 @@ void MCP23S08::setup() {
   this->transfer_byte(0b00011000);  // Enable HAEN pins for addressing
   this->disable();
 
+  // Read current output register state
+  this->read_reg(mcp23x08_base::MCP23X08_OLAT, &this->olat_);
+
   if (this->open_drain_ints_) {
     // enable open-drain interrupt pins, 3.3V-safe
     this->write_reg(mcp23x08_base::MCP23X08_IOCON, 0x04);
@@ -35,7 +38,6 @@ void MCP23S08::dump_config() {
 }
 
 bool MCP23S08::read_reg(uint8_t reg, uint8_t *value) {
-  uint8_t data;
   this->enable();
   this->transfer_byte(this->device_opcode_ | 1);
   this->transfer_byte(reg);

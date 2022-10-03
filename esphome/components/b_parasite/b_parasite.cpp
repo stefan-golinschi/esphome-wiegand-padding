@@ -1,7 +1,7 @@
 #include "b_parasite.h"
 #include "esphome/core/log.h"
 
-#ifdef ARDUINO_ARCH_ESP32
+#ifdef USE_ESP32
 
 namespace esphome {
 namespace b_parasite {
@@ -14,6 +14,7 @@ void BParasite::dump_config() {
   LOG_SENSOR("  ", "Temperature", this->temperature_);
   LOG_SENSOR("  ", "Humidity", this->humidity_);
   LOG_SENSOR("  ", "Soil Moisture", this->soil_moisture_);
+  LOG_SENSOR("  ", "Illuminance", this->illuminance_);
 }
 
 bool BParasite::parse_device(const esp32_ble_tracker::ESPBTDevice &device) {
@@ -36,6 +37,15 @@ bool BParasite::parse_device(const esp32_ble_tracker::ESPBTDevice &device) {
 
   const auto &data = service_data.data;
 
+  const uint8_t protocol_version = data[0] >> 4;
+  if (protocol_version != 1 && protocol_version != 2) {
+    ESP_LOGE(TAG, "Unsupported protocol version: %u", protocol_version);
+    return false;
+  }
+
+  // Some b-parasite versions have an (optional) illuminance sensor.
+  bool has_illuminance = data[0] & 0x1;
+
   // Counter for deduplicating messages.
   uint8_t counter = data[1] & 0x0f;
   if (last_processed_counter_ == counter) {
@@ -47,9 +57,15 @@ bool BParasite::parse_device(const esp32_ble_tracker::ESPBTDevice &device) {
   uint16_t battery_millivolt = data[2] << 8 | data[3];
   float battery_voltage = battery_millivolt / 1000.0f;
 
-  // Temperature in 1000 * Celsius.
-  uint16_t temp_millicelcius = data[4] << 8 | data[5];
-  float temp_celcius = temp_millicelcius / 1000.0f;
+  // Temperature in 1000 * Celsius (protocol v1) or 100 * Celsius (protocol v2).
+  float temp_celsius;
+  if (protocol_version == 1) {
+    uint16_t temp_millicelsius = data[4] << 8 | data[5];
+    temp_celsius = temp_millicelsius / 1000.0f;
+  } else {
+    int16_t temp_centicelsius = data[4] << 8 | data[5];
+    temp_celsius = temp_centicelsius / 100.0f;
+  }
 
   // Relative air humidity in the range [0, 2^16).
   uint16_t humidity = data[6] << 8 | data[7];
@@ -59,17 +75,27 @@ bool BParasite::parse_device(const esp32_ble_tracker::ESPBTDevice &device) {
   uint16_t soil_moisture = data[8] << 8 | data[9];
   float moisture_percent = (100.0f * soil_moisture) / (1 << 16);
 
+  // Ambient light in lux.
+  float illuminance = has_illuminance ? data[16] << 8 | data[17] : 0.0f;
+
   if (battery_voltage_ != nullptr) {
     battery_voltage_->publish_state(battery_voltage);
   }
   if (temperature_ != nullptr) {
-    temperature_->publish_state(temp_celcius);
+    temperature_->publish_state(temp_celsius);
   }
   if (humidity_ != nullptr) {
     humidity_->publish_state(humidity_percent);
   }
   if (soil_moisture_ != nullptr) {
     soil_moisture_->publish_state(moisture_percent);
+  }
+  if (illuminance_ != nullptr) {
+    if (has_illuminance) {
+      illuminance_->publish_state(illuminance);
+    } else {
+      ESP_LOGE(TAG, "No lux information is present in the BLE packet");
+    }
   }
 
   last_processed_counter_ = counter;
@@ -79,4 +105,4 @@ bool BParasite::parse_device(const esp32_ble_tracker::ESPBTDevice &device) {
 }  // namespace b_parasite
 }  // namespace esphome
 
-#endif  // ARDUINO_ARCH_ESP32
+#endif  // USE_ESP32

@@ -82,11 +82,11 @@ class BME280Component : public PollingComponent, public i2c::I2CDevice {
 
  protected:
   /// Read the temperature value and store the calculated ambient temperature in t_fine.
-  float read_temperature_(int32_t *t_fine);
+  float read_temperature_(const uint8_t *data, int32_t *t_fine);
   /// Read the pressure value in hPa using the provided t_fine value.
-  float read_pressure_(int32_t t_fine);
+  float read_pressure_(const uint8_t *data, int32_t t_fine);
   /// Read the humidity value in % using the provided t_fine value.
-  float read_humidity_(int32_t t_fine);
+  float read_humidity_(const uint8_t *data, int32_t t_fine);
   uint8_t read_u8_(uint8_t a_register);
   uint16_t read_u16_le_(uint8_t a_register);
   int16_t read_s16_le_(uint8_t a_register);
@@ -96,9 +96,9 @@ class BME280Component : public PollingComponent, public i2c::I2CDevice {
   BME280Oversampling pressure_oversampling_{BME280_OVERSAMPLING_16X};
   BME280Oversampling humidity_oversampling_{BME280_OVERSAMPLING_16X};
   BME280IIRFilter iir_filter_{BME280_IIR_FILTER_OFF};
-  sensor::Sensor *temperature_sensor_;
-  sensor::Sensor *pressure_sensor_;
-  sensor::Sensor *humidity_sensor_;
+  sensor::Sensor *temperature_sensor_{nullptr};
+  sensor::Sensor *pressure_sensor_{nullptr};
+  sensor::Sensor *humidity_sensor_{nullptr};
   enum ErrorCode {
     NONE = 0,
     COMMUNICATION_FAILED,

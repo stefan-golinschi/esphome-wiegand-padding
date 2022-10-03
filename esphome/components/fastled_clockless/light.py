@@ -45,10 +45,16 @@ CONFIG_SCHEMA = cv.All(
     fastled_base.BASE_SCHEMA.extend(
         {
             cv.Required(CONF_CHIPSET): cv.one_of(*CHIPSETS, upper=True),
-            cv.Required(CONF_PIN): pins.output_pin,
+            cv.Required(CONF_PIN): pins.internal_gpio_output_pin_number,
         }
     ),
     _validate,
+    cv.require_framework_version(
+        esp8266_arduino=cv.Version(2, 7, 4),
+        esp32_arduino=cv.Version(99, 0, 0),
+        max_version=True,
+        extra_message="Please see note on documentation for FastLED",
+    ),
 )
 
 

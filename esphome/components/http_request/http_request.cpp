@@ -1,5 +1,9 @@
+#ifdef USE_ARDUINO
+
 #include "http_request.h"
+#include "esphome/core/defines.h"
 #include "esphome/core/log.h"
+#include "esphome/components/network/util.h"
 
 namespace esphome {
 namespace http_request {
@@ -10,6 +14,8 @@ void HttpRequestComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "HTTP Request:");
   ESP_LOGCONFIG(TAG, "  Timeout: %ums", this->timeout_);
   ESP_LOGCONFIG(TAG, "  User-Agent: %s", this->useragent_);
+  ESP_LOGCONFIG(TAG, "  Follow Redirects: %d", this->follow_redirects_);
+  ESP_LOGCONFIG(TAG, "  Redirect limit: %d", this->redirect_limit_);
 }
 
 void HttpRequestComponent::set_url(std::string url) {
@@ -25,17 +31,31 @@ void HttpRequestComponent::set_url(std::string url) {
 }
 
 void HttpRequestComponent::send(const std::vector<HttpRequestResponseTrigger *> &response_triggers) {
+  if (!network::is_connected()) {
+    this->client_.end();
+    this->status_set_warning();
+    ESP_LOGW(TAG, "HTTP Request failed; Not connected to network");
+    return;
+  }
+
   bool begin_status = false;
   const String url = this->url_.c_str();
-#ifdef ARDUINO_ARCH_ESP32
+#if defined(USE_ESP32) || (defined(USE_ESP8266) && USE_ARDUINO_VERSION_CODE >= VERSION_CODE(2, 6, 0))
+#if defined(USE_ESP32) || USE_ARDUINO_VERSION_CODE >= VERSION_CODE(2, 7, 0)
+  if (this->follow_redirects_) {
+    this->client_.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  } else {
+    this->client_.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+  }
+#else
+  this->client_.setFollowRedirects(this->follow_redirects_);
+#endif
+  this->client_.setRedirectLimit(this->redirect_limit_);
+#endif
+#if defined(USE_ESP32)
   begin_status = this->client_.begin(url);
-#endif
-#ifdef ARDUINO_ARCH_ESP8266
-#ifndef CLANG_TIDY
-  this->client_.setFollowRedirects(true);
-  this->client_.setRedirectLimit(3);
+#elif defined(USE_ESP8266)
   begin_status = this->client_.begin(*this->get_wifi_client_(), url);
-#endif
 #endif
 
   if (!begin_status) {
@@ -74,19 +94,21 @@ void HttpRequestComponent::send(const std::vector<HttpRequestResponseTrigger *> 
   ESP_LOGD(TAG, "HTTP Request completed; URL: %s; Code: %d", this->url_.c_str(), http_code);
 }
 
-#ifdef ARDUINO_ARCH_ESP8266
-WiFiClient *HttpRequestComponent::get_wifi_client_() {
+#ifdef USE_ESP8266
+std::shared_ptr<WiFiClient> HttpRequestComponent::get_wifi_client_() {
+#ifdef USE_HTTP_REQUEST_ESP8266_HTTPS
   if (this->secure_) {
     if (this->wifi_client_secure_ == nullptr) {
-      this->wifi_client_secure_ = new BearSSL::WiFiClientSecure();
+      this->wifi_client_secure_ = std::make_shared<BearSSL::WiFiClientSecure>();
       this->wifi_client_secure_->setInsecure();
       this->wifi_client_secure_->setBufferSizes(512, 512);
     }
     return this->wifi_client_secure_;
   }
+#endif
 
   if (this->wifi_client_ == nullptr) {
-    this->wifi_client_ = new WiFiClient();
+    this->wifi_client_ = std::make_shared<WiFiClient>();
   }
   return this->wifi_client_;
 }
@@ -98,9 +120,20 @@ void HttpRequestComponent::close() {
 }
 
 const char *HttpRequestComponent::get_string() {
-  static const String STR = this->client_.getString();
-  return STR.c_str();
+#if defined(ESP32)
+  // The static variable is here because HTTPClient::getString() returns a String on ESP32,
+  // and we need something to keep a buffer alive.
+  static String str;
+#else
+  // However on ESP8266, HTTPClient::getString() returns a String& to a member variable.
+  // Leaving this the default so that any new platform either doesn't copy, or encounters a compilation error.
+  auto &
+#endif
+  str = this->client_.getString();
+  return str.c_str();
 }
 
 }  // namespace http_request
 }  // namespace esphome
+
+#endif  // USE_ARDUINO

@@ -1,15 +1,13 @@
 #pragma once
 
+#ifdef USE_ARDUINO
+
 #include "esphome/core/macros.h"
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/color.h"
 #include "esphome/components/light/light_output.h"
 #include "esphome/components/light/addressable_light.h"
-
-#if defined(ARDUINO_ARCH_ESP8266) && ARDUINO_VERSION_CODE < VERSION_CODE(2, 4, 0)
-#error The NeoPixelBus library requires at least arduino_version 2.4.x
-#endif
 
 #include "NeoPixelBus.h"
 
@@ -79,7 +77,7 @@ class NeoPixelBusLightOutputBase : public light::AddressableLight {
       (*this)[i] = Color(0, 0, 0, 0);
     }
 
-    this->effect_data_ = new uint8_t[this->size()];
+    this->effect_data_ = new uint8_t[this->size()];  // NOLINT
     this->controller_->Begin();
   }
 
@@ -144,3 +142,5 @@ class NeoPixelRGBWLightOutput : public NeoPixelBusLightOutputBase<T_METHOD, T_CO
 
 }  // namespace neopixelbus
 }  // namespace esphome
+
+#endif  // USE_ARDUINO

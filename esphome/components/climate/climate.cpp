@@ -1,4 +1,5 @@
 #include "climate.h"
+#include "esphome/core/macros.h"
 
 namespace esphome {
 namespace climate {
@@ -9,8 +10,8 @@ void ClimateCall::perform() {
   ESP_LOGD(TAG, "'%s' - Setting", this->parent_->get_name().c_str());
   this->validate_();
   if (this->mode_.has_value()) {
-    const char *mode_s = climate_mode_to_string(*this->mode_);
-    ESP_LOGD(TAG, "  Mode: %s", mode_s);
+    const LogString *mode_s = climate_mode_to_string(*this->mode_);
+    ESP_LOGD(TAG, "  Mode: %s", LOG_STR_ARG(mode_s));
   }
   if (this->custom_fan_mode_.has_value()) {
     this->fan_mode_.reset();
@@ -18,8 +19,8 @@ void ClimateCall::perform() {
   }
   if (this->fan_mode_.has_value()) {
     this->custom_fan_mode_.reset();
-    const char *fan_mode_s = climate_fan_mode_to_string(*this->fan_mode_);
-    ESP_LOGD(TAG, "  Fan: %s", fan_mode_s);
+    const LogString *fan_mode_s = climate_fan_mode_to_string(*this->fan_mode_);
+    ESP_LOGD(TAG, "  Fan: %s", LOG_STR_ARG(fan_mode_s));
   }
   if (this->custom_preset_.has_value()) {
     this->preset_.reset();
@@ -27,12 +28,12 @@ void ClimateCall::perform() {
   }
   if (this->preset_.has_value()) {
     this->custom_preset_.reset();
-    const char *preset_s = climate_preset_to_string(*this->preset_);
-    ESP_LOGD(TAG, "  Preset: %s", preset_s);
+    const LogString *preset_s = climate_preset_to_string(*this->preset_);
+    ESP_LOGD(TAG, "  Preset: %s", LOG_STR_ARG(preset_s));
   }
   if (this->swing_mode_.has_value()) {
-    const char *swing_mode_s = climate_swing_mode_to_string(*this->swing_mode_);
-    ESP_LOGD(TAG, "  Swing: %s", swing_mode_s);
+    const LogString *swing_mode_s = climate_swing_mode_to_string(*this->swing_mode_);
+    ESP_LOGD(TAG, "  Swing: %s", LOG_STR_ARG(swing_mode_s));
   }
   if (this->target_temperature_.has_value()) {
     ESP_LOGD(TAG, "  Target Temperature: %.2f", *this->target_temperature_);
@@ -50,7 +51,7 @@ void ClimateCall::validate_() {
   if (this->mode_.has_value()) {
     auto mode = *this->mode_;
     if (!traits.supports_mode(mode)) {
-      ESP_LOGW(TAG, "  Mode %s is not supported by this device!", climate_mode_to_string(mode));
+      ESP_LOGW(TAG, "  Mode %s is not supported by this device!", LOG_STR_ARG(climate_mode_to_string(mode)));
       this->mode_.reset();
     }
   }
@@ -63,7 +64,8 @@ void ClimateCall::validate_() {
   } else if (this->fan_mode_.has_value()) {
     auto fan_mode = *this->fan_mode_;
     if (!traits.supports_fan_mode(fan_mode)) {
-      ESP_LOGW(TAG, "  Fan Mode %s is not supported by this device!", climate_fan_mode_to_string(fan_mode));
+      ESP_LOGW(TAG, "  Fan Mode %s is not supported by this device!",
+               LOG_STR_ARG(climate_fan_mode_to_string(fan_mode)));
       this->fan_mode_.reset();
     }
   }
@@ -76,14 +78,15 @@ void ClimateCall::validate_() {
   } else if (this->preset_.has_value()) {
     auto preset = *this->preset_;
     if (!traits.supports_preset(preset)) {
-      ESP_LOGW(TAG, "  Preset %s is not supported by this device!", climate_preset_to_string(preset));
+      ESP_LOGW(TAG, "  Preset %s is not supported by this device!", LOG_STR_ARG(climate_preset_to_string(preset)));
       this->preset_.reset();
     }
   }
   if (this->swing_mode_.has_value()) {
     auto swing_mode = *this->swing_mode_;
     if (!traits.supports_swing_mode(swing_mode)) {
-      ESP_LOGW(TAG, "  Swing Mode %s is not supported by this device!", climate_swing_mode_to_string(swing_mode));
+      ESP_LOGW(TAG, "  Swing Mode %s is not supported by this device!",
+               LOG_STR_ARG(climate_swing_mode_to_string(swing_mode)));
       this->swing_mode_.reset();
     }
   }
@@ -93,7 +96,7 @@ void ClimateCall::validate_() {
       ESP_LOGW(TAG, "  Cannot set target temperature for climate device "
                     "with two-point target temperature!");
       this->target_temperature_.reset();
-    } else if (isnan(target)) {
+    } else if (std::isnan(target)) {
       ESP_LOGW(TAG, "  Target temperature must not be NAN!");
       this->target_temperature_.reset();
     }
@@ -105,11 +108,11 @@ void ClimateCall::validate_() {
       this->target_temperature_high_.reset();
     }
   }
-  if (this->target_temperature_low_.has_value() && isnan(*this->target_temperature_low_)) {
+  if (this->target_temperature_low_.has_value() && std::isnan(*this->target_temperature_low_)) {
     ESP_LOGW(TAG, "  Target temperature low must not be NAN!");
     this->target_temperature_low_.reset();
   }
-  if (this->target_temperature_high_.has_value() && isnan(*this->target_temperature_high_)) {
+  if (this->target_temperature_high_.has_value() && std::isnan(*this->target_temperature_high_)) {
     ESP_LOGW(TAG, "  Target temperature low must not be NAN!");
     this->target_temperature_high_.reset();
   }
@@ -316,17 +319,26 @@ void Climate::add_on_state_callback(std::function<void()> &&callback) {
 static const uint32_t RESTORE_STATE_VERSION = 0x848EA6ADUL;
 
 optional<ClimateDeviceRestoreState> Climate::restore_state_() {
-  this->rtc_ =
-      global_preferences.make_preference<ClimateDeviceRestoreState>(this->get_object_id_hash() ^ RESTORE_STATE_VERSION);
+  this->rtc_ = global_preferences->make_preference<ClimateDeviceRestoreState>(this->get_object_id_hash() ^
+                                                                              RESTORE_STATE_VERSION);
   ClimateDeviceRestoreState recovered{};
   if (!this->rtc_.load(&recovered))
     return {};
   return recovered;
 }
 void Climate::save_state_() {
+#if (defined(USE_ESP_IDF) || (defined(USE_ESP8266) && USE_ARDUINO_VERSION_CODE >= VERSION_CODE(3, 0, 0))) && \
+    !defined(CLANG_TIDY)
+#pragma GCC diagnostic ignored "-Wclass-memaccess"
+#define TEMP_IGNORE_MEMACCESS
+#endif
   ClimateDeviceRestoreState state{};
   // initialize as zero to prevent random data on stack triggering erase
   memset(&state, 0, sizeof(ClimateDeviceRestoreState));
+#ifdef TEMP_IGNORE_MEMACCESS
+#pragma GCC diagnostic pop
+#undef TEMP_IGNORE_MEMACCESS
+#endif
 
   state.mode = this->mode;
   auto traits = this->get_traits();
@@ -373,24 +385,24 @@ void Climate::publish_state() {
   ESP_LOGD(TAG, "'%s' - Sending state:", this->name_.c_str());
   auto traits = this->get_traits();
 
-  ESP_LOGD(TAG, "  Mode: %s", climate_mode_to_string(this->mode));
+  ESP_LOGD(TAG, "  Mode: %s", LOG_STR_ARG(climate_mode_to_string(this->mode)));
   if (traits.get_supports_action()) {
-    ESP_LOGD(TAG, "  Action: %s", climate_action_to_string(this->action));
+    ESP_LOGD(TAG, "  Action: %s", LOG_STR_ARG(climate_action_to_string(this->action)));
   }
   if (traits.get_supports_fan_modes() && this->fan_mode.has_value()) {
-    ESP_LOGD(TAG, "  Fan Mode: %s", climate_fan_mode_to_string(this->fan_mode.value()));
+    ESP_LOGD(TAG, "  Fan Mode: %s", LOG_STR_ARG(climate_fan_mode_to_string(this->fan_mode.value())));
   }
   if (!traits.get_supported_custom_fan_modes().empty() && this->custom_fan_mode.has_value()) {
     ESP_LOGD(TAG, "  Custom Fan Mode: %s", this->custom_fan_mode.value().c_str());
   }
   if (traits.get_supports_presets() && this->preset.has_value()) {
-    ESP_LOGD(TAG, "  Preset: %s", climate_preset_to_string(this->preset.value()));
+    ESP_LOGD(TAG, "  Preset: %s", LOG_STR_ARG(climate_preset_to_string(this->preset.value())));
   }
   if (!traits.get_supported_custom_presets().empty() && this->custom_preset.has_value()) {
     ESP_LOGD(TAG, "  Custom Preset: %s", this->custom_preset.value().c_str());
   }
   if (traits.get_supports_swing_modes()) {
-    ESP_LOGD(TAG, "  Swing Mode: %s", climate_swing_mode_to_string(this->swing_mode));
+    ESP_LOGD(TAG, "  Swing Mode: %s", LOG_STR_ARG(climate_swing_mode_to_string(this->swing_mode)));
   }
   if (traits.get_supports_current_temperature()) {
     ESP_LOGD(TAG, "  Current Temperature: %.2f°C", this->current_temperature);
@@ -407,7 +419,6 @@ void Climate::publish_state() {
   // Save state
   this->save_state_();
 }
-uint32_t Climate::hash_base() { return 3104134496UL; }
 
 ClimateTraits Climate::get_traits() {
   auto traits = this->traits();
@@ -432,7 +443,11 @@ void Climate::set_visual_max_temperature_override(float visual_max_temperature_o
 void Climate::set_visual_temperature_step_override(float visual_temperature_step_override) {
   this->visual_temperature_step_override_ = visual_temperature_step_override;
 }
-Climate::Climate(const std::string &name) : Nameable(name) {}
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+Climate::Climate(const std::string &name) : EntityBase(name) {}
+#pragma GCC diagnostic pop
+
 Climate::Climate() : Climate("") {}
 ClimateCall Climate::make_call() { return ClimateCall(this); }
 
@@ -534,12 +549,12 @@ void Climate::dump_traits_(const char *tag) {
   if (!traits.get_supported_modes().empty()) {
     ESP_LOGCONFIG(tag, "  [x] Supported modes:");
     for (ClimateMode m : traits.get_supported_modes())
-      ESP_LOGCONFIG(tag, "      - %s", climate_mode_to_string(m));
+      ESP_LOGCONFIG(tag, "      - %s", LOG_STR_ARG(climate_mode_to_string(m)));
   }
   if (!traits.get_supported_fan_modes().empty()) {
     ESP_LOGCONFIG(tag, "  [x] Supported fan modes:");
     for (ClimateFanMode m : traits.get_supported_fan_modes())
-      ESP_LOGCONFIG(tag, "      - %s", climate_fan_mode_to_string(m));
+      ESP_LOGCONFIG(tag, "      - %s", LOG_STR_ARG(climate_fan_mode_to_string(m)));
   }
   if (!traits.get_supported_custom_fan_modes().empty()) {
     ESP_LOGCONFIG(tag, "  [x] Supported custom fan modes:");
@@ -549,7 +564,7 @@ void Climate::dump_traits_(const char *tag) {
   if (!traits.get_supported_presets().empty()) {
     ESP_LOGCONFIG(tag, "  [x] Supported presets:");
     for (ClimatePreset p : traits.get_supported_presets())
-      ESP_LOGCONFIG(tag, "      - %s", climate_preset_to_string(p));
+      ESP_LOGCONFIG(tag, "      - %s", LOG_STR_ARG(climate_preset_to_string(p)));
   }
   if (!traits.get_supported_custom_presets().empty()) {
     ESP_LOGCONFIG(tag, "  [x] Supported custom presets:");
@@ -559,7 +574,7 @@ void Climate::dump_traits_(const char *tag) {
   if (!traits.get_supported_swing_modes().empty()) {
     ESP_LOGCONFIG(tag, "  [x] Supported swing modes:");
     for (ClimateSwingMode m : traits.get_supported_swing_modes())
-      ESP_LOGCONFIG(tag, "      - %s", climate_swing_mode_to_string(m));
+      ESP_LOGCONFIG(tag, "      - %s", LOG_STR_ARG(climate_swing_mode_to_string(m)));
   }
 }
 

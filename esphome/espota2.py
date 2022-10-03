@@ -4,6 +4,7 @@ import random
 import socket
 import sys
 import time
+import gzip
 
 from esphome.core import EsphomeError
 from esphome.helpers import is_ip_address, resolve_ip_address
@@ -17,6 +18,7 @@ RESPONSE_UPDATE_PREPARE_OK = 66
 RESPONSE_BIN_MD5_OK = 67
 RESPONSE_RECEIVE_OK = 68
 RESPONSE_UPDATE_END_OK = 69
+RESPONSE_SUPPORTS_COMPRESSION = 70
 
 RESPONSE_ERROR_MAGIC = 128
 RESPONSE_ERROR_UPDATE_PREPARE = 129
@@ -28,11 +30,15 @@ RESPONSE_ERROR_WRONG_CURRENT_FLASH_CONFIG = 134
 RESPONSE_ERROR_WRONG_NEW_FLASH_CONFIG = 135
 RESPONSE_ERROR_ESP8266_NOT_ENOUGH_SPACE = 136
 RESPONSE_ERROR_ESP32_NOT_ENOUGH_SPACE = 137
+RESPONSE_ERROR_NO_UPDATE_PARTITION = 138
+RESPONSE_ERROR_MD5_MISMATCH = 139
 RESPONSE_ERROR_UNKNOWN = 255
 
 OTA_VERSION_1_0 = 1
 
 MAGIC_BYTES = [0x6C, 0x26, 0xF7, 0x5C, 0x45]
+
+FEATURE_SUPPORTS_COMPRESSION = 0x01
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,13 +58,10 @@ class ProgressBar:
             return
         self.last_progress = new_progress
         block = int(round(bar_length * progress))
-        text = "\rUploading: [{0}] {1}% {2}".format(
-            "=" * block + " " * (bar_length - block), new_progress, status
-        )
+        text = f"\rUploading: [{'=' * block + ' ' * (bar_length - block)}] {new_progress}% {status}"
         sys.stderr.write(text)
         sys.stderr.flush()
 
-    # pylint: disable=no-self-use
     def done(self):
         sys.stderr.write("\n")
         sys.stderr.flush()
@@ -149,12 +152,22 @@ def check_error(data, expect):
             "Error: The OTA partition on the ESP is too small. ESPHome needs to resize "
             "this partition, please flash over USB."
         )
+    if dat == RESPONSE_ERROR_NO_UPDATE_PARTITION:
+        raise OTAError(
+            "Error: The OTA partition on the ESP couldn't be found. ESPHome needs to create "
+            "this partition, please flash over USB."
+        )
+    if dat == RESPONSE_ERROR_MD5_MISMATCH:
+        raise OTAError(
+            "Error: Application MD5 code mismatch. Please try again "
+            "or flash over USB with a good quality cable."
+        )
     if dat == RESPONSE_ERROR_UNKNOWN:
         raise OTAError("Unknown error from ESP")
     if not isinstance(expect, (list, tuple)):
         expect = [expect]
     if dat not in expect:
-        raise OTAError("Unexpected response from ESP: 0x{:02X}".format(data[0]))
+        raise OTAError(f"Unexpected response from ESP: 0x{data[0]:02X}")
 
 
 def send_check(sock, data, msg):
@@ -172,11 +185,9 @@ def send_check(sock, data, msg):
 
 
 def perform_ota(sock, password, file_handle, filename):
-    file_md5 = hashlib.md5(file_handle.read()).hexdigest()
-    file_size = file_handle.tell()
+    file_contents = file_handle.read()
+    file_size = len(file_contents)
     _LOGGER.info("Uploading %s (%s bytes)", filename, file_size)
-    file_handle.seek(0)
-    _LOGGER.debug("MD5 of binary is %s", file_md5)
 
     # Enable nodelay, we need it for phase 1
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -187,8 +198,16 @@ def perform_ota(sock, password, file_handle, filename):
         raise OTAError(f"Unsupported OTA version {version}")
 
     # Features
-    send_check(sock, 0x00, "features")
-    receive_exactly(sock, 1, "features", RESPONSE_HEADER_OK)
+    send_check(sock, FEATURE_SUPPORTS_COMPRESSION, "features")
+    features = receive_exactly(
+        sock, 1, "features", [RESPONSE_HEADER_OK, RESPONSE_SUPPORTS_COMPRESSION]
+    )[0]
+
+    if features == RESPONSE_SUPPORTS_COMPRESSION:
+        upload_contents = gzip.compress(file_contents, compresslevel=9)
+        _LOGGER.info("Compressed to %s bytes", len(upload_contents))
+    else:
+        upload_contents = file_contents
 
     (auth,) = receive_exactly(
         sock, 1, "auth", [RESPONSE_REQUEST_AUTH, RESPONSE_AUTH_OK]
@@ -215,16 +234,20 @@ def perform_ota(sock, password, file_handle, filename):
         send_check(sock, result, "auth result")
         receive_exactly(sock, 1, "auth result", RESPONSE_AUTH_OK)
 
-    file_size_encoded = [
-        (file_size >> 24) & 0xFF,
-        (file_size >> 16) & 0xFF,
-        (file_size >> 8) & 0xFF,
-        (file_size >> 0) & 0xFF,
+    upload_size = len(upload_contents)
+    upload_size_encoded = [
+        (upload_size >> 24) & 0xFF,
+        (upload_size >> 16) & 0xFF,
+        (upload_size >> 8) & 0xFF,
+        (upload_size >> 0) & 0xFF,
     ]
-    send_check(sock, file_size_encoded, "binary size")
+    send_check(sock, upload_size_encoded, "binary size")
     receive_exactly(sock, 1, "binary size", RESPONSE_UPDATE_PREPARE_OK)
 
-    send_check(sock, file_md5, "file checksum")
+    upload_md5 = hashlib.md5(upload_contents).hexdigest()
+    _LOGGER.debug("MD5 of upload is %s", upload_md5)
+
+    send_check(sock, upload_md5, "file checksum")
     receive_exactly(sock, 1, "file checksum", RESPONSE_BIN_MD5_OK)
 
     # Disable nodelay for transfer
@@ -238,7 +261,7 @@ def perform_ota(sock, password, file_handle, filename):
     offset = 0
     progress = ProgressBar()
     while True:
-        chunk = file_handle.read(1024)
+        chunk = upload_contents[offset : offset + 1024]
         if not chunk:
             break
         offset += len(chunk)
@@ -249,7 +272,7 @@ def perform_ota(sock, password, file_handle, filename):
             sys.stderr.write("\n")
             raise OTAError(f"Error sending data: {err}") from err
 
-        progress.update(offset / float(file_size))
+        progress.update(offset / upload_size)
     progress.done()
 
     # Enable nodelay for last checks

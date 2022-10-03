@@ -8,7 +8,8 @@ namespace light {
 
 static const char *const TAG = "light";
 
-LightState::LightState(const std::string &name, LightOutput *output) : Nameable(name), output_(output) {}
+LightState::LightState(const std::string &name, LightOutput *output) : EntityBase(name), output_(output) {}
+LightState::LightState(LightOutput *output) : output_(output) {}
 
 LightTraits LightState::get_traits() { return this->output_->get_traits(); }
 LightCall LightState::turn_on() { return this->make_call().set_state(true); }
@@ -53,7 +54,7 @@ void LightState::setup() {
     case LIGHT_RESTORE_DEFAULT_ON:
     case LIGHT_RESTORE_INVERTED_DEFAULT_OFF:
     case LIGHT_RESTORE_INVERTED_DEFAULT_ON:
-      this->rtc_ = global_preferences.make_preference<LightStateRTCState>(this->get_object_id_hash());
+      this->rtc_ = global_preferences->make_preference<LightStateRTCState>(this->get_object_id_hash());
       // Attempt to load from preferences, else fall back to default values
       if (!this->rtc_.load(&recovered)) {
         recovered.state = false;
@@ -66,6 +67,12 @@ void LightState::setup() {
         // Inverted restore state
         recovered.state = !recovered.state;
       }
+      break;
+    case LIGHT_RESTORE_AND_OFF:
+    case LIGHT_RESTORE_AND_ON:
+      this->rtc_ = global_preferences->make_preference<LightStateRTCState>(this->get_object_id_hash());
+      this->rtc_.load(&recovered);
+      recovered.state = (this->restore_mode_ == LIGHT_RESTORE_AND_ON);
       break;
     case LIGHT_ALWAYS_OFF:
       recovered.state = false;
@@ -121,6 +128,9 @@ void LightState::loop() {
     }
 
     if (this->transformer_->is_finished()) {
+      // if the transition has written directly to the output, current_values is outdated, so update it
+      this->current_values = this->transformer_->get_target_values();
+
       this->transformer_->stop();
       this->transformer_ = nullptr;
       this->target_state_reached_callback_.call();
@@ -135,16 +145,16 @@ void LightState::loop() {
 }
 
 float LightState::get_setup_priority() const { return setup_priority::HARDWARE - 1.0f; }
-uint32_t LightState::hash_base() { return 1114400283; }
 
 void LightState::publish_state() { this->remote_values_callback_.call(); }
 
 LightOutput *LightState::get_output() const { return this->output_; }
 std::string LightState::get_effect_name() {
-  if (this->active_effect_index_ > 0)
+  if (this->active_effect_index_ > 0) {
     return this->effects_[this->active_effect_index_ - 1]->get_name();
-  else
+  } else {
     return "None";
+  }
 }
 
 void LightState::add_new_remote_values_callback(std::function<void()> &&send_callback) {
@@ -215,10 +225,11 @@ void LightState::start_effect_(uint32_t effect_index) {
   effect->start_internal();
 }
 LightEffect *LightState::get_active_effect_() {
-  if (this->active_effect_index_ == 0)
+  if (this->active_effect_index_ == 0) {
     return nullptr;
-  else
+  } else {
     return this->effects_[this->active_effect_index_ - 1];
+  }
 }
 void LightState::stop_effect_() {
   auto *effect = this->get_active_effect_();
@@ -228,13 +239,16 @@ void LightState::stop_effect_() {
   this->active_effect_index_ = 0;
 }
 
-void LightState::start_transition_(const LightColorValues &target, uint32_t length) {
+void LightState::start_transition_(const LightColorValues &target, uint32_t length, bool set_remote_values) {
   this->transformer_ = this->output_->create_default_transition();
   this->transformer_->setup(this->current_values, target, length);
-  this->remote_values = target;
+
+  if (set_remote_values) {
+    this->remote_values = target;
+  }
 }
 
-void LightState::start_flash_(const LightColorValues &target, uint32_t length) {
+void LightState::start_flash_(const LightColorValues &target, uint32_t length, bool set_remote_values) {
   LightColorValues end_colors = this->remote_values;
   // If starting a flash if one is already happening, set end values to end values of current flash
   // Hacky but works
@@ -243,7 +257,10 @@ void LightState::start_flash_(const LightColorValues &target, uint32_t length) {
 
   this->transformer_ = make_unique<LightFlashTransformer>(*this);
   this->transformer_->setup(end_colors, target, length);
-  this->remote_values = target;
+
+  if (set_remote_values) {
+    this->remote_values = target;
+  };
 }
 
 void LightState::set_immediately_(const LightColorValues &target, bool set_remote_values) {

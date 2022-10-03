@@ -3,7 +3,7 @@
 #include "esphome/core/automation.h"
 #include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
 
-#ifdef ARDUINO_ARCH_ESP32
+#ifdef USE_ESP32
 
 namespace esphome {
 namespace esp32_ble_tracker {
@@ -74,6 +74,32 @@ class BLEManufacturerDataAdvertiseTrigger : public Trigger<const adv_data_t &>, 
  protected:
   uint64_t address_ = 0;
   ESPBTUUID uuid_;
+};
+
+class BLEEndOfScanTrigger : public Trigger<>, public ESPBTDeviceListener {
+ public:
+  explicit BLEEndOfScanTrigger(ESP32BLETracker *parent) { parent->register_listener(this); }
+
+  bool parse_device(const ESPBTDevice &device) override { return false; }
+  void on_scan_end() override { this->trigger(); }
+};
+
+template<typename... Ts> class ESP32BLEStartScanAction : public Action<Ts...> {
+ public:
+  ESP32BLEStartScanAction(ESP32BLETracker *parent) : parent_(parent) {}
+  TEMPLATABLE_VALUE(bool, continuous)
+  void play(Ts... x) override {
+    this->parent_->set_scan_continuous(this->continuous_.value(x...));
+    this->parent_->start_scan();
+  }
+
+ protected:
+  ESP32BLETracker *parent_;
+};
+
+template<typename... Ts> class ESP32BLEStopScanAction : public Action<Ts...>, public Parented<ESP32BLETracker> {
+ public:
+  void play(Ts... x) override { this->parent_->stop_scan(); }
 };
 
 }  // namespace esp32_ble_tracker

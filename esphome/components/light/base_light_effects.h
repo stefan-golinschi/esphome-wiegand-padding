@@ -102,21 +102,24 @@ class RandomLightEffect : public LightEffect {
 
 class LambdaLightEffect : public LightEffect {
  public:
-  LambdaLightEffect(const std::string &name, std::function<void()> f, uint32_t update_interval)
+  LambdaLightEffect(const std::string &name, std::function<void(bool initial_run)> f, uint32_t update_interval)
       : LightEffect(name), f_(std::move(f)), update_interval_(update_interval) {}
 
+  void start() override { this->initial_run_ = true; }
   void apply() override {
     const uint32_t now = millis();
     if (now - this->last_run_ >= this->update_interval_) {
       this->last_run_ = now;
-      this->f_();
+      this->f_(this->initial_run_);
+      this->initial_run_ = false;
     }
   }
 
  protected:
-  std::function<void()> f_;
+  std::function<void(bool initial_run)> f_;
   uint32_t update_interval_;
   uint32_t last_run_{0};
+  bool initial_run_;
 };
 
 class AutomationLightEffect : public LightEffect {
@@ -156,7 +159,7 @@ class StrobeLightEffect : public LightEffect {
 
     if (!color.is_on()) {
       // Don't turn the light off, otherwise the light effect will be stopped
-      call.set_brightness_if_supported(0.0f);
+      call.set_brightness(0.0f);
       call.set_state(true);
     }
     call.set_publish(false);

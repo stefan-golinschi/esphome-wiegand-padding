@@ -4,7 +4,14 @@ from esphome import core
 from esphome.components import display, font
 import esphome.config_validation as cv
 import esphome.codegen as cg
-from esphome.const import CONF_FILE, CONF_ID, CONF_TYPE, CONF_RESIZE, CONF_DITHER
+from esphome.const import (
+    CONF_DITHER,
+    CONF_FILE,
+    CONF_ID,
+    CONF_RAW_DATA_ID,
+    CONF_RESIZE,
+    CONF_TYPE,
+)
 from esphome.core import CORE, HexInt
 
 _LOGGER = logging.getLogger(__name__)
@@ -17,11 +24,11 @@ IMAGE_TYPE = {
     "BINARY": ImageType.IMAGE_TYPE_BINARY,
     "GRAYSCALE": ImageType.IMAGE_TYPE_GRAYSCALE,
     "RGB24": ImageType.IMAGE_TYPE_RGB24,
+    "TRANSPARENT_BINARY": ImageType.IMAGE_TYPE_TRANSPARENT_BINARY,
+    "RGB565": ImageType.IMAGE_TYPE_RGB565,
 }
 
 Image_ = display.display_ns.class_("Image")
-
-CONF_RAW_DATA_ID = "raw_data_id"
 
 IMAGE_SCHEMA = cv.Schema(
     {
@@ -83,6 +90,21 @@ async def to_code(config):
             data[pos] = pix[2]
             pos += 1
 
+    elif config[CONF_TYPE] == "RGB565":
+        image = image.convert("RGB")
+        pixels = list(image.getdata())
+        data = [0 for _ in range(height * width * 3)]
+        pos = 0
+        for pix in pixels:
+            R = pix[0] >> 3
+            G = pix[1] >> 2
+            B = pix[2] >> 3
+            rgb = (R << 11) | (G << 5) | B
+            data[pos] = rgb >> 8
+            pos += 1
+            data[pos] = rgb & 255
+            pos += 1
+
     elif config[CONF_TYPE] == "BINARY":
         image = image.convert("1", dither=dither)
         width8 = ((width + 7) // 8) * 8
@@ -90,6 +112,17 @@ async def to_code(config):
         for y in range(height):
             for x in range(width):
                 if image.getpixel((x, y)):
+                    continue
+                pos = x + y * width8
+                data[pos // 8] |= 0x80 >> (pos % 8)
+
+    elif config[CONF_TYPE] == "TRANSPARENT_BINARY":
+        image = image.convert("RGBA")
+        width8 = ((width + 7) // 8) * 8
+        data = [0 for _ in range(height * width8 // 8)]
+        for y in range(height):
+            for x in range(width):
+                if not image.getpixel((x, y))[3]:
                     continue
                 pos = x + y * width8
                 data[pos // 8] |= 0x80 >> (pos % 8)

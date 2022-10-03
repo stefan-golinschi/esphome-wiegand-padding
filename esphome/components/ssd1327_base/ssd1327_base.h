@@ -1,7 +1,7 @@
 #pragma once
 
 #include "esphome/core/component.h"
-#include "esphome/core/esphal.h"
+#include "esphome/core/hal.h"
 #include "esphome/components/display/display_buffer.h"
 
 namespace esphome {
@@ -29,6 +29,8 @@ class SSD1327 : public PollingComponent, public display::DisplayBuffer {
 
   float get_setup_priority() const override { return setup_priority::PROCESSOR; }
   void fill(Color color) override;
+
+  display::DisplayType get_display_type() override { return display::DisplayType::DISPLAY_TYPE_GRAYSCALE; }
 
  protected:
   virtual void command(uint8_t value) = 0;

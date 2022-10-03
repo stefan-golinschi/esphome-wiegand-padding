@@ -8,7 +8,7 @@ namespace hm3301 {
 
 class CAQICalculator : public AbstractAQICalculator {
  public:
-  uint8_t get_aqi(uint16_t pm2_5_value, uint16_t pm10_0_value) override {
+  uint16_t get_aqi(uint16_t pm2_5_value, uint16_t pm10_0_value) override {
     int pm2_5_index = calculate_index_(pm2_5_value, pm2_5_calculation_grid_);
     int pm10_0_index = calculate_index_(pm10_0_value, pm10_0_calculation_grid_);
 
@@ -35,9 +35,7 @@ class CAQICalculator : public AbstractAQICalculator {
     int conc_lo = array[grid_index][0];
     int conc_hi = array[grid_index][1];
 
-    int aqi = ((aqi_hi - aqi_lo) / (conc_hi - conc_lo)) * (value - conc_lo) + aqi_lo;
-
-    return aqi;
+    return (value - conc_lo) * (aqi_hi - aqi_lo) / (conc_hi - conc_lo) + aqi_lo;
   }
 
   int get_grid_index_(uint16_t value, int array[AMOUNT_OF_LEVELS][2]) {

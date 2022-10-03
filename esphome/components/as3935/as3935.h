@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esphome/core/component.h"
+#include "esphome/core/hal.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
 
@@ -91,9 +92,9 @@ class AS3935Component : public Component {
 
   virtual void write_register(uint8_t reg, uint8_t mask, uint8_t bits, uint8_t start_position) = 0;
 
-  sensor::Sensor *distance_sensor_;
-  sensor::Sensor *energy_sensor_;
-  binary_sensor::BinarySensor *thunder_alert_binary_sensor_;
+  sensor::Sensor *distance_sensor_{nullptr};
+  sensor::Sensor *energy_sensor_{nullptr};
+  binary_sensor::BinarySensor *thunder_alert_binary_sensor_{nullptr};
   GPIOPin *irq_pin_;
 
   bool indoor_;
