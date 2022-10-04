@@ -26,10 +26,11 @@ std::string format_data(uint8_t *data, uint8_t bits) {
     if (i == Wiegand::MAX_BYTES - 1)
       format[strlen(format) - 1] = '\0';
 
-    if (i < padding)
+    if (i < padding) {
       sprintf(buf + j, format, 0x00);
-    else
+    } else {
       sprintf(buf + j, format, data[i - padding]);
+    }
 
     j = j + 3;
   }
@@ -71,10 +72,8 @@ void Wiegand::setup() {
 }
 
 void Wiegand::update() {
-  {
-    InterruptLock lock;
-    flush();
-  }
+  InterruptLock lock;
+  flush();
 }
 
 void IRAM_ATTR Wiegand::pin_state_changed(Wiegand *arg) {
