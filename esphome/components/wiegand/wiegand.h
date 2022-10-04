@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esphome/core/component.h"
+#include "esphome/core/hal.h"
 #include "esphome/core/automation.h"
 
 namespace esphome {
@@ -38,8 +39,8 @@ class Wiegand : public PollingComponent {
 
   static void pin_state_changed(Wiegand *arg);
 
-  inline void set_pin_d0(GPIOPin *_pin_d0) { this->pin_d0 = _pin_d0; }
-  inline void set_pin_d1(GPIOPin *_pin_d1) { this->pin_d1 = _pin_d1; }
+  inline void set_pin_d0(InternalGPIOPin *_pin_d0) { this->pin_d0 = _pin_d0; }
+  inline void set_pin_d1(InternalGPIOPin *_pin_d1) { this->pin_d1 = _pin_d1; }
   inline void set_pin0_state(bool state) { set_pin_state(0, state); }
   inline void set_pin1_state(bool state) { set_pin_state(1, state); }
   inline void received_bit(bool bitValue) {
@@ -64,8 +65,8 @@ class Wiegand : public PollingComponent {
   std::vector<WiegandTrigger *> triggers_;
   uint32_t last_id_{0};
 
-  GPIOPin *pin_d0;
-  GPIOPin *pin_d1;
+  InternalGPIOPin *pin_d0;
+  InternalGPIOPin *pin_d1;
   uint8_t expected_bits;
   bool decode_messages;
   uint8_t bits;

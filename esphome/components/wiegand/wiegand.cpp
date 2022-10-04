@@ -65,8 +65,8 @@ void Wiegand::setup() {
   pin_d0->setup();
   pin_d1->setup();
 
-  pin_d0->attach_interrupt(pin_state_changed, this, CHANGE);
-  pin_d1->attach_interrupt(pin_state_changed, this, CHANGE);
+  pin_d0->attach_interrupt(pin_state_changed, this, gpio::INTERRUPT_ANY_EDGE);
+  pin_d1->attach_interrupt(pin_state_changed, this, gpio::INTERRUPT_ANY_EDGE);
   pin_state_changed(this);
 }
 
@@ -271,8 +271,8 @@ void Wiegand::flush_data() {
       // FIXME: The parity check doesn't seem to work for a 34-bit reader I have,
       // but I suspect that the reader is non-complaint
 
-      boolean left_parity = false;
-      boolean right_parity = false;
+      bool left_parity = false;
+      bool right_parity = false;
       for (int i = 0; i < (bits + 1) / 2; i++) {
         left_parity = (left_parity != read_bit(data, i));
       }
