@@ -77,7 +77,7 @@ void Wiegand::update() {
   }
 }
 
-void ICACHE_RAM_ATTR Wiegand::pin_state_changed(Wiegand *arg) {
+void IRAM_ATTR Wiegand::pin_state_changed(Wiegand *arg) {
   arg->set_pin0_state(arg->pin_d0->digital_read());
   arg->set_pin1_state(arg->pin_d1->digital_read());
 }
