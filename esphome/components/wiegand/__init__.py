@@ -7,8 +7,8 @@ from esphome.const import CONF_ID, CONF_ON_TAG, CONF_TRIGGER_ID
 CODEOWNERS = ["@stefan-golinschi"]
 
 CONF_DATA_BITS = "data_bits"
-CONF_WG_D0 = "d0_pin"
-CONF_WG_D1 = "d1_pin"
+CONF_D0_PIN = "d0_pin"
+CONF_D1_PIN = "d1_pin"
 CONF_WIEGAND_ID = "wiegand_id"
 
 wiegand_ns = cg.esphome_ns.namespace("wiegand")
@@ -21,8 +21,8 @@ CONFIG_SCHEMA = (
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(Wiegand),
-            cv.Required(CONF_WG_D0): pins.internal_gpio_input_pullup_pin_schema,
-            cv.Required(CONF_WG_D1): pins.internal_gpio_input_pullup_pin_schema,
+            cv.Required(CONF_D0_PIN): pins.internal_gpio_input_pullup_pin_schema,
+            cv.Required(CONF_D1_PIN): pins.internal_gpio_input_pullup_pin_schema,
             cv.Optional(CONF_DATA_BITS, default=24): cv.int_range(min=8, max=34),
             cv.Optional(CONF_ON_TAG): automation.validate_automation(
                 {
@@ -38,9 +38,9 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
 
-    pin_d0 = await cg.gpio_pin_expression(config[CONF_WG_D0])
+    pin_d0 = await cg.gpio_pin_expression(config[CONF_D0_PIN])
     cg.add(var.set_pin_d0(pin_d0))
-    pin_d1 = await cg.gpio_pin_expression(config[CONF_WG_D1])
+    pin_d1 = await cg.gpio_pin_expression(config[CONF_D1_PIN])
     cg.add(var.set_pin_d1(pin_d1))
 
     for conf in config.get(CONF_ON_TAG, []):
